@@ -116,7 +116,18 @@ func encode(_ frames: [Frame], end: TimeInterval, gif: Bool) throws -> Data {
 
 @MainActor
 final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    private let status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    private lazy var status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    private var controls: NSWindow?
+    private var controlStatus: NSTextField?
+    private var controlScreenshot: NSButton?
+    private var controlGIF: NSButton?
+    private var controlPermission: NSButton?
+    private var libraryDisclosure: NSButton?
+    private var libraryView: GIFLibraryView?
+    private var libraryExpanded = false
+    private let gifStore = GIFStore.local
+    private var overlay: RecordingOverlay?
+    private var readyToRecord: (() -> Void)?
     private var selection: SelectionWindow?
     private var settings: NSPanel?
     private var monitor: Any?
@@ -152,10 +163,21 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let unavailable = Action.allCases.filter { !register($0, shortcut($0)) }
         if !unavailable.isEmpty { state = "部分快捷键不可用，请在设置中修改" }
         refresh()
+        showControls()
         startUpdateCheck(manual: false)
         updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 60 * 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.startUpdateCheck(manual: false) }
         }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        status.isVisible = true
+        showControls()
+        return false
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        refreshPermissionButton()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -182,9 +204,122 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return true
     }
 
+    @objc private func showControls() {
+        if controls == nil {
+            let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 540, height: 215),
+                                  styleMask: [.titled, .closable, .miniaturizable],
+                                  backing: .buffered, defer: false)
+            window.title = "snap-gif"
+            window.isReleasedWhenClosed = false
+
+            let title = NSTextField(labelWithString: "截屏和录制 GIF")
+            title.font = .systemFont(ofSize: 23, weight: .semibold)
+            let summary = NSTextField(wrappingLabelWithString: "先框选区域，再点框下的「开始」。停止后自动保存并复制 GIF。")
+            summary.textColor = .secondaryLabelColor
+            let screenshot = NSButton(title: "", target: self, action: #selector(captureScreenshot))
+            let gif = NSButton(title: "", target: self, action: #selector(captureGIF))
+            let preferences = NSButton(title: "快捷键设置…", target: self, action: #selector(showSettings))
+            let permission = NSButton(title: "申请录屏权限…", target: self,
+                                      action: #selector(requestScreenRecordingPermission))
+            let actions = NSStackView(views: [gif, screenshot, permission])
+            actions.spacing = 10
+            let statusText = NSTextField(labelWithString: state)
+            statusText.textColor = .secondaryLabelColor
+            statusText.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            let footer = NSStackView(views: [statusText, preferences])
+            footer.distribution = .fill
+            footer.spacing = 12
+            footer.alignment = .centerY
+            let disclosure = NSButton(checkboxWithTitle: "GIF 图库", target: self, action: #selector(toggleLibrary))
+            disclosure.setButtonType(.onOff)
+            disclosure.bezelStyle = .disclosure
+            disclosure.title = ""
+            disclosure.setAccessibilityLabel("展开 GIF 图库")
+            let libraryLabel = NSTextField(labelWithString: "GIF 图库")
+            libraryLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+            let libraryHeader = NSStackView(views: [disclosure, libraryLabel])
+            libraryHeader.alignment = .centerY
+            libraryHeader.spacing = 7
+            let library = GIFLibraryView(store: gifStore)
+            library.isHidden = true
+            let stack = NSStackView(views: [title, summary, actions, footer, libraryHeader, library])
+            stack.orientation = .vertical
+            stack.alignment = .leading
+            stack.spacing = 15
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            guard let content = window.contentView else { return }
+            content.addSubview(stack)
+            NSLayoutConstraint.activate([
+                stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
+                stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
+                stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
+                summary.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                footer.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                library.widthAnchor.constraint(equalTo: stack.widthAnchor)
+            ])
+            controls = window
+            controlStatus = statusText
+            controlScreenshot = screenshot
+            controlGIF = gif
+            controlPermission = permission
+            libraryDisclosure = disclosure
+            libraryView = library
+            window.center()
+        }
+        refresh()
+        refreshPermissionButton()
+        controls?.deminiaturize(nil)
+        NSApp.activate()
+        controls?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func toggleLibrary() {
+        setLibraryExpanded(!libraryExpanded)
+    }
+
+    private func setLibraryExpanded(_ expanded: Bool, select file: URL? = nil) {
+        libraryView?.reload(select: file)
+        guard libraryExpanded != expanded, let controls else { return }
+        libraryExpanded = expanded
+        libraryDisclosure?.state = expanded ? .on : .off
+        libraryDisclosure?.setAccessibilityLabel(expanded ? "收起 GIF 图库" : "展开 GIF 图库")
+        libraryView?.isHidden = !expanded
+        let delta: CGFloat = expanded ? 270 : -270
+        var frame = controls.frame
+        frame.origin.y -= delta
+        frame.size.height += delta
+        if let screen = controls.screen, frame.minY < screen.visibleFrame.minY {
+            frame.origin.y = screen.visibleFrame.minY
+        }
+        controls.setFrame(frame, display: true, animate: false)
+    }
+
+    private func refreshPermissionButton() {
+        guard let controlPermission else { return }
+        controlPermission.title = CGPreflightScreenCaptureAccess() ? "录屏权限设置…" : "申请录屏权限…"
+    }
+
+    @objc private func requestScreenRecordingPermission() {
+        if !CGPreflightScreenCaptureAccess() {
+            _ = CGRequestScreenCaptureAccess()
+        }
+        let pane = if #available(macOS 26, *) {
+            "com.apple.settings.PrivacySecurity.extension"
+        } else {
+            "com.apple.preference.security"
+        }
+        if let url = URL(string: "x-apple.systempreferences:\(pane)?Privacy_ScreenCapture"),
+           NSWorkspace.shared.open(url) { return }
+        showAlert("无法打开录屏权限设置",
+                  "请在「系统设置 → 隐私与安全性 → 屏幕与系统音频录制」开启 snap-gif。")
+    }
+
     private func refresh() {
         let symbol = recording ? "record.circle.fill" : (pendingGIF == nil ? "viewfinder" : "pause.circle")
         status.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "snap-gif")
+        status.button?.title = "GIF"
+        status.button?.imagePosition = .imageLeading
+        status.button?.setAccessibilityLabel("snap-gif")
         status.button?.toolTip = "snap-gif · \(state)"
         let menu = NSMenu()
         let statusRow = NSMenuItem(title: state, action: nil, keyEquivalent: "")
@@ -194,18 +329,26 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let screenshot = menu.addItem(withTitle: "\(Action.screenshot.title)    \(shortcut(.screenshot).label)",
                                        action: #selector(captureScreenshot), keyEquivalent: "")
         screenshot.target = self
-        let gifTitle = recording ? "暂停录制" : (pendingGIF == nil ? Action.gif.title : "保存 GIF…")
+        overlay?.update(recording: recording, stopping: pausedAt != nil)
+        let gifTitle = recording ? "停止并保存" : (readyToRecord != nil ? "开始录制" :
+            (pendingGIF == nil ? Action.gif.title : "保存 GIF…"))
+        controlStatus?.stringValue = state
+        controlScreenshot?.title = "截图  \(shortcut(.screenshot).label)"
+        controlScreenshot?.isEnabled = !busy
+        controlGIF?.title = "\(gifTitle)  \(shortcut(.gif).label)"
+        controlGIF?.isEnabled = (!busy || recording || readyToRecord != nil) && pausedAt == nil
         let gif = menu.addItem(withTitle: "\(gifTitle)    \(shortcut(.gif).label)",
                                 action: #selector(captureGIF), keyEquivalent: "")
         gif.target = self
         menu.autoenablesItems = false
         screenshot.isEnabled = !busy
-        gif.isEnabled = (!busy || recording) && pausedAt == nil
+        gif.isEnabled = (!busy || recording || readyToRecord != nil) && pausedAt == nil
         if pendingGIF != nil && !busy {
             let discard = menu.addItem(withTitle: "丢弃本次录制", action: #selector(discardGIF), keyEquivalent: "")
             discard.target = self
         }
         menu.addItem(.separator())
+        menu.addItem(withTitle: "打开 snap-gif", action: #selector(showControls), keyEquivalent: "").target = self
         menu.addItem(withTitle: "快捷键设置…", action: #selector(showSettings), keyEquivalent: "").target = self
         let update = menu.addItem(withTitle: checkingUpdate ? "正在检查更新…" : "检查更新…",
                                   action: #selector(checkUpdates), keyEquivalent: "")
@@ -285,8 +428,13 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard editing == nil else { return }
         if recording, action == .gif, pausedAt == nil {
             pausedAt = ProcessInfo.processInfo.systemUptime
-            state = "已暂停 · 正在生成 GIF"
+            state = "已停止 · 正在生成 GIF"
             refresh()
+            return
+        }
+        if action == .gif, let start = readyToRecord {
+            readyToRecord = nil
+            start()
             return
         }
         if action == .gif, pendingGIF != nil, !busy {
@@ -301,6 +449,8 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         guard let display = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value else { return }
         busy = true
+        let returnToControls = controls?.isVisible == true
+        controls?.orderOut(nil)
         state = "正在框选"
         refresh()
         let window = SelectionWindow(contentRect: screen.frame, styleMask: .borderless,
@@ -318,17 +468,50 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             selection?.orderOut(nil)
             selection = nil
             if let region {
-                Task { await self.capture(action, display: display, region: region, scale: screen.backingScaleFactor) }
+                if action == .gif {
+                    prepareRecording(region: region, screen: screen, display: display,
+                                     returnToControls: returnToControls)
+                } else {
+                    Task { await self.capture(action, display: display, region: region,
+                                              scale: screen.backingScaleFactor, returnToControls: returnToControls) }
+                }
             } else {
                 busy = false
                 state = "已取消"
-                refresh()
+                if returnToControls { showControls() } else { refresh() }
             }
         }
         selection = window
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(view)
+    }
+
+    private func prepareRecording(region: CGRect, screen: NSScreen, display: CGDirectDisplayID,
+                                  returnToControls: Bool) {
+        overlay = RecordingOverlay(region: region, screen: screen, action: { [weak self] in
+            self?.perform(.gif)
+        }, cancel: { [weak self] in
+            guard let self else { return }
+            readyToRecord = nil
+            overlay?.close()
+            overlay = nil
+            busy = false
+            state = "已取消"
+            if returnToControls { showControls() } else { refresh() }
+        })
+        readyToRecord = { [weak self] in
+            guard let self else { return }
+            pausedAt = nil
+            recording = true
+            state = "正在录制 GIF · 最长 15 秒"
+            refresh()
+            Task { await self.capture(.gif, display: display, region: region,
+                                      scale: screen.backingScaleFactor, returnToControls: returnToControls) }
+        }
+        state = "区域已选定 · 等待开始"
+        refresh()
+        overlay?.show()
     }
 
     @objc private func discardGIF() {
@@ -368,24 +551,37 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         state = "已保存 \(url.lastPathComponent)"
     }
 
-    private func capture(_ action: Action, display: CGDirectDisplayID, region: CGRect, scale: CGFloat) async {
-        defer { recording = false; pausedAt = nil; busy = false; refresh() }
+    private func capture(_ action: Action, display: CGDirectDisplayID, region: CGRect, scale: CGFloat,
+                         returnToControls: Bool) async {
+        defer {
+            recording = false
+            pausedAt = nil
+            readyToRecord = nil
+            overlay?.close()
+            overlay = nil
+            busy = false
+            if returnToControls { showControls() } else { refresh() }
+        }
         let gif = action == .gif
         do {
             try await Task.sleep(for: .milliseconds(160))
-            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
             guard let screen = content.displays.first(where: { $0.displayID == display }) else { throw CaptureError.display }
-            let filter = SCContentFilter(display: screen, excludingWindows: [])
+            let ownApplications = content.applications.filter {
+                $0.processID == ProcessInfo.processInfo.processIdentifier
+            }
+            let filter = SCContentFilter(display: screen, excludingApplications: ownApplications,
+                                         exceptingWindows: [])
             let config = SCStreamConfiguration()
             let ratio = gif ? min(scale, 720 / max(region.width, region.height)) : scale
             config.sourceRect = region
             config.width = max(2, Int(region.width * ratio))
             config.height = max(2, Int(region.height * ratio))
             config.showsCursor = false
-            pausedAt = nil
-            recording = gif
-            state = gif ? "正在录制 GIF · 最长 15 秒" : "正在截图"
-            refresh()
+            if !gif {
+                state = "正在截图"
+                refresh()
+            }
             var frames: [Frame] = []
             let start = ProcessInfo.processInfo.systemUptime
             repeat {
@@ -401,24 +597,32 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             } while gif && pausedAt == nil && ProcessInfo.processInfo.systemUptime - start < 15
             let end = (pausedAt ?? ProcessInfo.processInfo.systemUptime) - start
             recording = false
-            state = gif ? "已暂停 · 正在生成 GIF" : "正在复制到剪贴板"
+            if gif { pausedAt = ProcessInfo.processInfo.systemUptime }
+            state = gif ? "录制结束 · 正在生成 GIF" : "正在复制到剪贴板"
             refresh()
             let data = try await Task.detached(priority: .userInitiated) { [frames] in
                 try encode(frames, end: end, gif: gif)
             }.value
-            if gif { pendingGIF = data }
-            let item = NSPasteboardItem()
-            let type: NSPasteboard.PasteboardType = gif ? .init(UTType.gif.identifier) : .png
-            guard item.setData(data, forType: type) else { throw CaptureError.clipboard }
-            if gif, let first = frames.first {
-                let preview = try? encode([first], end: 0, gif: false)
-                if let preview { item.setData(preview, forType: .png) }
+            if gif {
+                // Retain the bytes for manual recovery if the library cannot be written.
+                pendingGIF = data
+                let file = try gifStore.save(data)
+                pendingGIF = nil
+                if returnToControls { setLibraryExpanded(true, select: file) }
+                else { libraryView?.reload(select: file) }
+                do {
+                    try copyCapture(data, gif: true)
+                    state = "GIF 已保存并复制"
+                } catch {
+                    state = "GIF 已保存"
+                    showAlert("已保存 GIF，复制失败", error.localizedDescription)
+                }
+            } else {
+                try copyCapture(data, gif: false)
+                state = "截图已复制"
             }
-            NSPasteboard.general.clearContents()
-            guard NSPasteboard.general.writeObjects([item]) else { throw CaptureError.clipboard }
-            state = gif ? "已暂停 · GIF 已复制，可保存" : "截图已复制"
         } catch {
-            state = pendingGIF != nil ? "GIF 可保存" : "捕获失败"
+            state = pendingGIF != nil ? "无法存入图库 · 可另存 GIF" : "捕获失败"
             showAlert("无法完成捕获", error.localizedDescription)
         }
     }
@@ -454,7 +658,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
                 buttons[action] = button
             }
-            let help = NSTextField(wrappingLabelWithString: "点击快捷键后按下新组合键，Esc 取消。录制时按 GIF 快捷键暂停，再按一次保存。")
+            let help = NSTextField(wrappingLabelWithString: "点击快捷键后按下新组合键，Esc 取消。框选后再次按 GIF 快捷键开始，录制时再按一次停止并保存。")
             help.textColor = .secondaryLabelColor
             stack.addArrangedSubview(help)
             help.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
@@ -532,6 +736,6 @@ MainActor.assumeIsolated {
     let app = NSApplication.shared
     let delegate = App()
     app.delegate = delegate
-    app.setActivationPolicy(.accessory)
+    app.setActivationPolicy(.regular)
     withExtendedLifetime(delegate) { app.run() }
 }

@@ -90,7 +90,7 @@ struct ReleaseUpdater {
             throw UpdateError.invalidArchive
         }
         _ = try run(URL(fileURLWithPath: "/usr/bin/codesign"),
-                    ["--verify", "--strict", "--deep", "-R", "identifier \"\(identifier)\"", staged.path])
+                    ["--verify", "--strict", "--deep", "-R", "=identifier \"\(identifier)\"", staged.path])
         _ = try manager.replaceItemAt(app, withItemAt: staged, backupItemName: nil,
                                       options: [.usingNewMetadataOnly])
     }

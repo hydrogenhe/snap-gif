@@ -228,8 +228,8 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             defer { checkingUpdate = false; refresh() }
             do {
                 let result = try await Task.detached {
-                    let updater = try ReleaseUpdater()
-                    return (updater, try updater.latest())
+                    let updater = ReleaseUpdater()
+                    return (updater, try await updater.latest())
                 }.value
                 if let release = result.1 {
                     availableUpdate = (result.0, release)
@@ -265,7 +265,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         refresh()
         Task {
             do {
-                try await Task.detached { try updater.install(release) }.value
+                try await Task.detached { try await updater.install(release) }.value
                 try updater.relaunchAfterExit()
                 NSApp.terminate(nil)
             } catch {

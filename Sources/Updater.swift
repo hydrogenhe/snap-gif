@@ -13,12 +13,12 @@ struct GitHubRelease: Decodable {
 }
 
 enum UpdateError: LocalizedError {
-    case missingCLI, commandFailed, invalidRelease, invalidArchive, cannotInstall
+    case unavailable, commandFailed, invalidRelease, invalidArchive, cannotInstall
 
     var errorDescription: String? {
         switch self {
-        case .missingCLI: return "请安装 GitHub CLI，并运行 gh auth login 登录可访问仓库的账号。"
-        case .commandFailed: return "GitHub 请求失败。请检查网络，以及 gh auth status 是否显示已登录。"
+        case .unavailable: return "GitHub 下载暂时不可用，请稍后重试。"
+        case .commandFailed: return "无法解包或验证更新的 App。"
         case .invalidRelease: return "这个版本没有适用于本机的更新包。"
         case .invalidArchive: return "更新包校验失败，已停止安装。"
         case .cannotInstall: return "当前 App 所在目录不可写。请先把 App 移到「应用程序」或自己的可写目录。"
@@ -36,24 +36,31 @@ struct ReleaseUpdater {
         #endif
     }()
 
-    private let gh: URL
+    private let session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpShouldSetCookies = false
+        config.httpCookieStorage = nil
+        config.urlCredentialStorage = nil
+        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForResource = 120
+        return URLSession(configuration: config)
+    }()
     private let app: URL
     private let identifier: String
     private let currentVersion: String
 
-    init(bundle: Bundle = .main) throws {
-        let candidates = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/opt/local/bin/gh"]
-        guard let path = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-            throw UpdateError.missingCLI
-        }
-        gh = URL(fileURLWithPath: path)
+    init(bundle: Bundle = .main) {
         app = bundle.bundleURL.resolvingSymlinksInPath()
         identifier = bundle.bundleIdentifier ?? ""
         currentVersion = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
     }
 
-    func latest() throws -> GitHubRelease? {
-        let json = try run(gh, ["api", "--hostname", "github.com", "repos/\(Self.repository)/releases/latest"])
+    func latest() async throws -> GitHubRelease? {
+        let url = URL(string: "https://api.github.com/repos/\(Self.repository)/releases/latest")!
+        var request = URLRequest(url: url)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        let (json, response) = try await session.data(for: request)
+        try requireSuccess(response)
         let release = try JSONDecoder().decode(GitHubRelease.self, from: json)
         guard let newer = versionParts(release.version), let current = versionParts(currentVersion),
               release.tag_name.hasPrefix("v") else { throw UpdateError.invalidRelease }
@@ -62,7 +69,7 @@ struct ReleaseUpdater {
         return release
     }
 
-    func install(_ release: GitHubRelease) throws {
+    func install(_ release: GitHubRelease) async throws {
         guard let asset = release.assets.first(where: { $0.name == Self.assetName }),
               let expected = asset.digest, expected.hasPrefix("sha256:") else {
             throw UpdateError.invalidArchive
@@ -76,20 +83,26 @@ struct ReleaseUpdater {
         try manager.createDirectory(at: temp, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { try? manager.removeItem(at: temp) }
 
+        guard release.tag_name.hasPrefix("v"), versionParts(release.version) != nil else {
+            throw UpdateError.invalidRelease
+        }
+        let url = URL(string: "https://github.com/\(Self.repository)/releases/download/\(release.tag_name)/\(Self.assetName)")!
+        let (download, response) = try await session.download(from: url)
+        defer { try? manager.removeItem(at: download) }
+        try requireSuccess(response)
         let archive = temp.appendingPathComponent("update.zip")
-        _ = try run(gh, ["release", "download", release.tag_name, "--repo", Self.repository,
-                         "--pattern", Self.assetName, "--output", archive.path])
+        try manager.moveItem(at: download, to: archive)
         let digest = SHA256.hash(data: try Data(contentsOf: archive, options: .mappedIfSafe))
         let actual = "sha256:" + digest.map { String(format: "%02x", $0) }.joined()
         guard actual == expected else { throw UpdateError.invalidArchive }
 
-        _ = try run(URL(fileURLWithPath: "/usr/bin/ditto"), ["-x", "-k", archive.path, temp.path])
+        try run(URL(fileURLWithPath: "/usr/bin/ditto"), ["-x", "-k", archive.path, temp.path])
         let staged = temp.appendingPathComponent("snap-gif.app", isDirectory: true)
         guard let bundle = Bundle(url: staged), bundle.bundleIdentifier == identifier,
               bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String == release.version else {
             throw UpdateError.invalidArchive
         }
-        _ = try run(URL(fileURLWithPath: "/usr/bin/codesign"),
+        try run(URL(fileURLWithPath: "/usr/bin/codesign"),
                     ["--verify", "--strict", "--deep", "-R", "=identifier \"\(identifier)\"", staged.path])
         _ = try manager.replaceItemAt(app, withItemAt: staged, backupItemName: nil,
                                       options: [.usingNewMetadataOnly])
@@ -111,22 +124,20 @@ struct ReleaseUpdater {
         return numbers
     }
 
-    private func run(_ executable: URL, _ arguments: [String]) throws -> Data {
+    private func requireSuccess(_ response: URLResponse) throws {
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+              http.url?.scheme == "https" else { throw UpdateError.unavailable }
+    }
+
+    private func run(_ executable: URL, _ arguments: [String]) throws {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
-        // Finder launches without a shell. Inherit the Keychain login through gh itself.
-        process.environment = ProcessInfo.processInfo.environment.merging([
-            "GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"
-        ]) { _, value in value }
-        let output = Pipe()
-        process.standardOutput = output
+        process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         process.standardInput = FileHandle.nullDevice
         try process.run()
-        let result = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { throw UpdateError.commandFailed }
-        return result
     }
 }

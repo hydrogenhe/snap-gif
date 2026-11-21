@@ -127,7 +127,8 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var state = "就绪"
     private var busy = false
     private var recording = false
-    private var stopRequested = false
+    private var pausedAt: TimeInterval?
+    private var pendingGIF: Data?
     private let signature: OSType = 0x53474946
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -170,22 +171,28 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func refresh() {
-        let symbol = recording ? "record.circle.fill" : "viewfinder"
+        let symbol = recording ? "record.circle.fill" : (pendingGIF == nil ? "viewfinder" : "pause.circle")
         status.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "snap-gif")
         status.button?.toolTip = "snap-gif · \(state)"
         let menu = NSMenu()
         let statusRow = NSMenuItem(title: state, action: nil, keyEquivalent: "")
+        statusRow.isEnabled = false
         menu.addItem(statusRow)
         menu.addItem(.separator())
         let screenshot = menu.addItem(withTitle: "\(Action.screenshot.title)    \(shortcut(.screenshot).label)",
                                        action: #selector(captureScreenshot), keyEquivalent: "")
         screenshot.target = self
-        let gif = menu.addItem(withTitle: "\(recording ? "停止并复制 GIF" : Action.gif.title)    \(shortcut(.gif).label)",
+        let gifTitle = recording ? "暂停录制" : (pendingGIF == nil ? Action.gif.title : "保存 GIF…")
+        let gif = menu.addItem(withTitle: "\(gifTitle)    \(shortcut(.gif).label)",
                                 action: #selector(captureGIF), keyEquivalent: "")
         gif.target = self
         menu.autoenablesItems = false
         screenshot.isEnabled = !busy
-        gif.isEnabled = !busy || recording
+        gif.isEnabled = (!busy || recording) && pausedAt == nil
+        if pendingGIF != nil && !busy {
+            let discard = menu.addItem(withTitle: "丢弃本次录制", action: #selector(discardGIF), keyEquivalent: "")
+            discard.target = self
+        }
         menu.addItem(.separator())
         menu.addItem(withTitle: "快捷键设置…", action: #selector(showSettings), keyEquivalent: "").target = self
         menu.addItem(withTitle: "退出 snap-gif", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -197,7 +204,16 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func perform(_ action: Action) {
         guard editing == nil else { return }
-        if recording, action == .gif { stopRequested = true; return }
+        if recording, action == .gif, pausedAt == nil {
+            pausedAt = ProcessInfo.processInfo.systemUptime
+            state = "已暂停 · 正在生成 GIF"
+            refresh()
+            return
+        }
+        if action == .gif, pendingGIF != nil, !busy {
+            saveGIF()
+            return
+        }
         guard !busy, let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) else { return }
         guard CGPreflightScreenCaptureAccess() else {
             _ = CGRequestScreenCaptureAccess()
@@ -236,8 +252,45 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.makeFirstResponder(view)
     }
 
+    @objc private func discardGIF() {
+        guard pendingGIF != nil, !busy else { return }
+        pendingGIF = nil
+        state = "已丢弃录制"
+        refresh()
+    }
+
+    private func saveGIF() {
+        guard let data = pendingGIF else { return }
+        busy = true
+        refresh()
+        defer { busy = false; refresh() }
+
+        let panel = NSSavePanel()
+        panel.title = "保存录制"
+        panel.allowedContentTypes = [.gif]
+        panel.canCreateDirectories = true
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
+        panel.nameFieldStringValue = "snap-gif \(formatter.string(from: Date())).gif"
+        NSApp.activate()
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            try savePendingGIF(data, to: url)
+        } catch {
+            showAlert("无法保存 GIF", error.localizedDescription)
+        }
+    }
+
+    private func savePendingGIF(_ data: Data, to url: URL) throws {
+        try data.write(to: url, options: .atomic)
+        pendingGIF = nil
+        state = "已保存 \(url.lastPathComponent)"
+    }
+
     private func capture(_ action: Action, display: CGDirectDisplayID, region: CGRect, scale: CGFloat) async {
-        defer { recording = false; busy = false; refresh() }
+        defer { recording = false; pausedAt = nil; busy = false; refresh() }
         let gif = action == .gif
         do {
             try await Task.sleep(for: .milliseconds(160))
@@ -250,7 +303,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             config.width = max(2, Int(region.width * ratio))
             config.height = max(2, Int(region.height * ratio))
             config.showsCursor = false
-            stopRequested = false
+            pausedAt = nil
             recording = gif
             state = gif ? "正在录制 GIF · 最长 15 秒" : "正在截图"
             refresh()
@@ -259,19 +312,22 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             repeat {
                 let time = ProcessInfo.processInfo.systemUptime - start
                 let frame = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-                frames.append(Frame(image: frame, time: time))
-                if gif && !stopRequested {
+                if pausedAt == nil || frames.isEmpty {
+                    frames.append(Frame(image: frame, time: time))
+                }
+                if gif && pausedAt == nil {
                     let remaining = 0.125 - (ProcessInfo.processInfo.systemUptime - start - time)
                     if remaining > 0 { try await Task.sleep(for: .seconds(remaining)) }
                 }
-            } while gif && !stopRequested && ProcessInfo.processInfo.systemUptime - start < 15
-            let end = ProcessInfo.processInfo.systemUptime - start
+            } while gif && pausedAt == nil && ProcessInfo.processInfo.systemUptime - start < 15
+            let end = (pausedAt ?? ProcessInfo.processInfo.systemUptime) - start
             recording = false
-            state = "正在复制到剪贴板"
+            state = gif ? "已暂停 · 正在生成 GIF" : "正在复制到剪贴板"
             refresh()
             let data = try await Task.detached(priority: .userInitiated) { [frames] in
                 try encode(frames, end: end, gif: gif)
             }.value
+            if gif { pendingGIF = data }
             let item = NSPasteboardItem()
             let type: NSPasteboard.PasteboardType = gif ? .init(UTType.gif.identifier) : .png
             guard item.setData(data, forType: type) else { throw CaptureError.clipboard }
@@ -281,9 +337,9 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             NSPasteboard.general.clearContents()
             guard NSPasteboard.general.writeObjects([item]) else { throw CaptureError.clipboard }
-            state = gif ? "GIF 已复制" : "截图已复制"
+            state = gif ? "已暂停 · GIF 已复制，可保存" : "截图已复制"
         } catch {
-            state = "捕获失败"
+            state = pendingGIF != nil ? "GIF 可保存" : "捕获失败"
             showAlert("无法完成捕获", error.localizedDescription)
         }
     }
@@ -319,7 +375,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
                 buttons[action] = button
             }
-            let help = NSTextField(wrappingLabelWithString: "点击快捷键后按下新组合键，Esc 取消。再次按 GIF 快捷键即可停止录制。")
+            let help = NSTextField(wrappingLabelWithString: "点击快捷键后按下新组合键，Esc 取消。录制时按 GIF 快捷键暂停，再按一次保存。")
             help.textColor = .secondaryLabelColor
             stack.addArrangedSubview(help)
             help.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true

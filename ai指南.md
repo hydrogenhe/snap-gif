@@ -6,5 +6,6 @@
 - 技术栈：Swift、AppKit、Carbon 快捷键、ScreenCaptureKit、ImageIO。最低 macOS 14。
 - 源码位于 `Sources/main.swift`；运行 `./build.sh` 生成 `build/snap-gif.app`，再用 `open build/snap-gif.app` 打开。
 - 默认截图 ⌃⌥5、GIF ⌃⌥6。第二次按 GIF 快捷键停止，最长 15 秒。首次捕获需授予系统屏幕录制权限。
-- 已验证：Swift 编译、App 签名。屏幕捕获与系统剪贴板需在授权后的桌面会话中进行端到端验证。
-- CodeGraph：当前尚未初始化；有 CLI 时在项目根目录运行 `CODEGRAPH_TELEMETRY=0 codegraph init --local-only`。
+- 已验证：Swift 编译、App 签名、进程启动及 PNG / 双帧 GIF 编解码。屏幕捕获与系统剪贴板需在授权后的桌面会话中进行端到端验证。
+- GitHub：`hydrogenhe/snap-gif`（私有），默认分支 `main`。
+- CodeGraph：已用官方 CLI 执行 `CODEGRAPH_TELEMETRY=0 codegraph init --local-only`，索引 1 个 Swift 文件，索引目录不提交。源码变更后可运行 `codegraph sync`。

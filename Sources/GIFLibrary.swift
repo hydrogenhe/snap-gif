@@ -10,17 +10,22 @@ struct GIFStore {
         .appending(path: "GIFs", directoryHint: .isDirectory))
 
     func entries() throws -> [URL] {
-        try prepare()
-        let files = try FileManager.default.contentsOfDirectory(at: directory,
-            includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
-        return files.filter {
-            $0.pathExtension.lowercased() == "gif" &&
-            (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
-        }.sorted { $0.lastPathComponent > $1.lastPathComponent }
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .creationDateKey, .contentModificationDateKey]
+        let files = try FileManager.default.contentsOfDirectory(at: preparedDirectory(),
+            includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles])
+        return files.compactMap { file -> (url: URL, date: Date)? in
+            guard file.pathExtension.lowercased() == "gif",
+                  let values = try? file.resourceValues(forKeys: keys),
+                  values.isRegularFile == true else { return nil }
+            return (file, values.creationDate ?? values.contentModificationDate ?? .distantPast)
+        }.sorted { lhs, rhs in
+            if lhs.date != rhs.date { return lhs.date > rhs.date }
+            return lhs.url.lastPathComponent.compare(rhs.url.lastPathComponent, options: .numeric) == .orderedDescending
+        }.map(\.url)
     }
 
     func save(_ data: Data) throws -> URL {
-        try prepare()
+        let directory = try preparedDirectory()
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
@@ -39,8 +44,9 @@ struct GIFStore {
         try FileManager.default.trashItem(at: file, resultingItemURL: nil)
     }
 
-    private func prepare() throws {
+    func preparedDirectory() throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
     }
 }
 
@@ -68,6 +74,7 @@ final class GIFLibraryView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private let exportButton = NSButton(title: "另存为…", target: nil, action: nil)
     private let deleteButton = NSButton(title: "移到废纸篓", target: nil, action: nil)
     private var entries: [URL] = []
+    private var totalCount = 0
     private var selected: URL? { entries.indices.contains(table.selectedRow) ? entries[table.selectedRow] : nil }
 
     init(store: GIFStore) {
@@ -126,9 +133,12 @@ final class GIFLibraryView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     func reload(select file: URL? = nil) {
         let previous = file ?? selected
         do {
-            entries = try store.entries()
+            let files = try store.entries()
+            totalCount = files.count
+            entries = Array(files.prefix(10))
         } catch {
             entries = []
+            totalCount = 0
             table.reloadData()
             updateSelection()
             caption.stringValue = "无法读取图库 · \(error.localizedDescription)"
@@ -158,7 +168,8 @@ final class GIFLibraryView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         let file = selected
         preview.image = file.flatMap { NSImage(contentsOf: $0) }
         [copyButton, exportButton, deleteButton].forEach { $0.isEnabled = file != nil }
-        caption.stringValue = entries.isEmpty ? "还没有 GIF。完成首次录制后会自动保存在这里。" : "共 \(entries.count) 个 GIF"
+        caption.stringValue = entries.isEmpty ? "还没有 GIF。完成首次录制后会自动保存在这里。" :
+            "显示最近 \(entries.count) 条 · 共 \(totalCount) 个 GIF"
     }
 
     @objc private func copySelected() {

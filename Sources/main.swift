@@ -240,9 +240,11 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             disclosure.bezelStyle = .disclosure
             disclosure.title = ""
             disclosure.setAccessibilityLabel("展开 GIF 图库")
-            let libraryLabel = NSTextField(labelWithString: "GIF 图库")
+            let libraryLabel = NSTextField(labelWithString: "最近的 GIF")
             libraryLabel.font = .systemFont(ofSize: 14, weight: .semibold)
-            let libraryHeader = NSStackView(views: [disclosure, libraryLabel])
+            let folder = NSButton(title: "打开存储文件夹", target: self, action: #selector(openGIFFolder))
+            folder.setContentHuggingPriority(.required, for: .horizontal)
+            let libraryHeader = NSStackView(views: [disclosure, libraryLabel, NSView(), folder])
             libraryHeader.alignment = .centerY
             libraryHeader.spacing = 7
             let library = GIFLibraryView(store: gifStore)
@@ -260,6 +262,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
                 summary.widthAnchor.constraint(equalTo: stack.widthAnchor),
                 footer.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                libraryHeader.widthAnchor.constraint(equalTo: stack.widthAnchor),
                 library.widthAnchor.constraint(equalTo: stack.widthAnchor)
             ])
             controls = window
@@ -271,12 +274,25 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             libraryDisclosure = disclosure
             libraryView = library
             window.center()
+            setLibraryExpanded(true)
+        } else if libraryExpanded {
+            libraryView?.reload()
         }
         refresh()
         refreshPermissionButton()
         controls?.deminiaturize(nil)
         NSApp.activate()
         controls?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func openGIFFolder() {
+        do {
+            let directory = try gifStore.preparedDirectory()
+            if NSWorkspace.shared.open(directory) { return }
+            showAlert("无法打开存储文件夹", directory.path)
+        } catch {
+            showAlert("无法打开存储文件夹", error.localizedDescription)
+        }
     }
 
     @objc private func toggleLibrary() {
@@ -670,7 +686,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
                 buttons[action] = button
             }
-            let help = NSTextField(wrappingLabelWithString: "点击快捷键后按下新组合键，Esc 取消。框选后再次按 GIF 快捷键开始，录制时再按一次停止并保存。")
+            let help = NSTextField(wrappingLabelWithString: "可分别设置截图和 GIF 快捷键。点击按钮后按下新组合键，Esc 取消。请使用 ⌘、⌥ 或 ⌃ 加字母、数字等按键。")
             help.textColor = .secondaryLabelColor
             stack.addArrangedSubview(help)
             help.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
@@ -694,7 +710,9 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         finishEditing()
         editing = action
         sender.title = "按下新快捷键"
-        if let reference = hotkeys.removeValue(forKey: action) { UnregisterEventHotKey(reference) }
+        // Let the recorder receive shortcuts currently registered by either action.
+        for reference in hotkeys.values { UnregisterEventHotKey(reference) }
+        hotkeys.removeAll()
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, let action = editing else { return event }
             guard settings?.isKeyWindow == true else { finishEditing(); return event }
@@ -716,28 +734,41 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 return nil
             }
             let candidate = Shortcut(key: UInt32(event.keyCode), modifiers: modifiers, label: label + key)
-            guard register(action, candidate) else {
-                finishEditing()
-                showAlert("快捷键已被占用", "请选择另一个组合键。")
-                return nil
-            }
-            UserDefaults.standard.set(["key": candidate.key, "modifiers": candidate.modifiers, "label": candidate.label],
-                                      forKey: "shortcut.\(action.rawValue)")
+            let applied = applyShortcut(candidate, to: action)
             finishEditing()
-            refresh()
+            if !applied {
+                showAlert("快捷键已被占用", "请选择另一个组合键，原设置已保留。")
+            }
             return nil
         }
     }
 
+    private func applyShortcut(_ candidate: Shortcut, to action: Action) -> Bool {
+        let other = shortcut(action == .gif ? .screenshot : .gif)
+        guard candidate.key != other.key || candidate.modifiers != other.modifiers,
+              register(action, candidate) else { return false }
+        UserDefaults.standard.set(["key": candidate.key, "modifiers": candidate.modifiers, "label": candidate.label],
+                                  forKey: "shortcut.\(action.rawValue)")
+        return true
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        if editing != nil { finishEditing() }
+    }
+
     func windowWillClose(_ notification: Notification) {
-        finishEditing()
+        if editing != nil { finishEditing() }
     }
 
     private func finishEditing() {
         if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
-        if let action = editing {
-            if hotkeys[action] == nil { _ = register(action, shortcut(action)) }
-            buttons[action]?.title = shortcut(action).label
+        if editing != nil {
+            for action in Action.allCases where hotkeys[action] == nil {
+                _ = register(action, shortcut(action))
+            }
+            for action in Action.allCases {
+                buttons[action]?.title = shortcut(action).label
+            }
         }
         editing = nil
         refresh()

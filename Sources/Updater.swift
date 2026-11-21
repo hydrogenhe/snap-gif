@@ -56,9 +56,8 @@ struct ReleaseUpdater {
     }
 
     func latest() async throws -> GitHubRelease? {
-        let url = URL(string: "https://api.github.com/repos/\(Self.repository)/releases/latest")!
-        var request = URLRequest(url: url)
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        let url = URL(string: "https://github.com/\(Self.repository)/releases/latest/download/snap-gif-update.json")!
+        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
         let (json, response) = try await session.data(for: request)
         try requireSuccess(response)
         let release = try JSONDecoder().decode(GitHubRelease.self, from: json)

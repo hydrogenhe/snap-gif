@@ -129,6 +129,10 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var recording = false
     private var pausedAt: TimeInterval?
     private var pendingGIF: Data?
+    private var updateTimer: Timer?
+    private var checkingUpdate = false
+    private var updateInstalling = false
+    private var availableUpdate: (ReleaseUpdater, GitHubRelease)?
     private let signature: OSType = 0x53474946
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -148,6 +152,14 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let unavailable = Action.allCases.filter { !register($0, shortcut($0)) }
         if !unavailable.isEmpty { state = "部分快捷键不可用，请在设置中修改" }
         refresh()
+        startUpdateCheck(manual: false)
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 60 * 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.startUpdateCheck(manual: false) }
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        updateTimer?.invalidate()
     }
 
     private func shortcut(_ action: Action) -> Shortcut {
@@ -195,8 +207,75 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         menu.addItem(.separator())
         menu.addItem(withTitle: "快捷键设置…", action: #selector(showSettings), keyEquivalent: "").target = self
+        let update = menu.addItem(withTitle: checkingUpdate ? "正在检查更新…" : "检查更新…",
+                                  action: #selector(checkUpdates), keyEquivalent: "")
+        update.target = self
+        update.isEnabled = !busy && pendingGIF == nil && !checkingUpdate && !updateInstalling
         menu.addItem(withTitle: "退出 snap-gif", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         status.menu = menu
+        if availableUpdate != nil && !busy && pendingGIF == nil && editing == nil {
+            DispatchQueue.main.async { [weak self] in self?.offerUpdate() }
+        }
+    }
+
+    @objc private func checkUpdates() { startUpdateCheck(manual: true) }
+
+    private func startUpdateCheck(manual: Bool) {
+        guard !checkingUpdate, !updateInstalling, availableUpdate == nil else { return }
+        checkingUpdate = true
+        refresh()
+        Task {
+            defer { checkingUpdate = false; refresh() }
+            do {
+                let result = try await Task.detached {
+                    let updater = try ReleaseUpdater()
+                    return (updater, try updater.latest())
+                }.value
+                if let release = result.1 {
+                    availableUpdate = (result.0, release)
+                } else if manual {
+                    showAlert("已是最新版本", "当前没有可用的新版。")
+                }
+            } catch {
+                if manual { showAlert("无法检查更新", error.localizedDescription) }
+            }
+        }
+    }
+
+    private func offerUpdate() {
+        guard !busy, pendingGIF == nil, editing == nil,
+              let (updater, release) = availableUpdate else { return }
+        availableUpdate = nil
+        busy = true
+        refresh()
+        let alert = NSAlert()
+        alert.messageText = "发现 snap-gif \(release.version)"
+        alert.informativeText = "下载并安装后，snap-gif 会自动重新打开。"
+        alert.addButton(withTitle: "下载并安装")
+        alert.addButton(withTitle: "稍后")
+        NSApp.activate()
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            busy = false
+            refresh()
+            return
+        }
+
+        updateInstalling = true
+        state = "正在下载并安装 \(release.version)…"
+        refresh()
+        Task {
+            do {
+                try await Task.detached { try updater.install(release) }.value
+                try updater.relaunchAfterExit()
+                NSApp.terminate(nil)
+            } catch {
+                updateInstalling = false
+                busy = false
+                state = "更新未完成"
+                refresh()
+                showAlert("无法完成更新", error.localizedDescription)
+            }
+        }
     }
 
     @objc private func captureScreenshot() { perform(.screenshot) }
@@ -445,6 +524,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             buttons[action]?.title = shortcut(action).label
         }
         editing = nil
+        refresh()
     }
 }
 

@@ -15,3 +15,14 @@ macOS 菜单栏截图和 GIF 录制工具。捕获内容在本机处理，完成
 ./build.sh
 open build/snap-gif.app
 ```
+
+## 安装与更新
+
+从 [GitHub Releases](https://github.com/hydrogenhe/snap-gif/releases/latest)
+下载适用于 Apple 芯片的 ZIP，解压后将 App 放到可写目录。仓库为私有，
+下载和 App 内更新都需要拥有仓库访问权限的 GitHub 账号。
+
+App 内更新使用本机 GitHub CLI（`brew install gh`，再运行 `gh auth login`）。
+启动时以及常驻期间每 6 小时检查一次，也可从菜单栏点「检查更新…」。
+有新版时会弹出提示，点击「下载并安装」后会校验更新包，替换 App 并重新打开。
+v0.2.0 及更早版本需要先手动换成 v0.3.0，之后可通过 App 更新。

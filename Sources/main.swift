@@ -122,6 +122,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var controlScreenshot: NSButton?
     private var controlGIF: NSButton?
     private var controlPermission: NSButton?
+    private var controlUpdate: NSButton?
     private var libraryDisclosure: NSButton?
     private var libraryView: GIFLibraryView?
     private var libraryExpanded = false
@@ -141,6 +142,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var pausedAt: TimeInterval?
     private var pendingGIF: Data?
     private var updateTimer: Timer?
+    private let declinedUpdateKey = "declinedUpdateTag"
     private var checkingUpdate = false
     private var updateInstalling = false
     private var availableUpdate: (ReleaseUpdater, GitHubRelease)?
@@ -226,7 +228,10 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let statusText = NSTextField(labelWithString: state)
             statusText.textColor = .secondaryLabelColor
             statusText.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            let footer = NSStackView(views: [statusText, preferences])
+            let updateButton = NSButton(title: "检查更新…", target: self, action: #selector(checkUpdates))
+            preferences.setContentHuggingPriority(.required, for: .horizontal)
+            updateButton.setContentHuggingPriority(.required, for: .horizontal)
+            let footer = NSStackView(views: [statusText, preferences, updateButton])
             footer.distribution = .fill
             footer.spacing = 12
             footer.alignment = .centerY
@@ -262,6 +267,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             controlScreenshot = screenshot
             controlGIF = gif
             controlPermission = permission
+            controlUpdate = updateButton
             libraryDisclosure = disclosure
             libraryView = library
             window.center()
@@ -354,6 +360,8 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                   action: #selector(checkUpdates), keyEquivalent: "")
         update.target = self
         update.isEnabled = !busy && pendingGIF == nil && !checkingUpdate && !updateInstalling
+        controlUpdate?.title = update.title
+        controlUpdate?.isEnabled = update.isEnabled
         menu.addItem(withTitle: "退出 snap-gif", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         status.menu = menu
         if availableUpdate != nil && !busy && pendingGIF == nil && editing == nil {
@@ -375,7 +383,9 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     return (updater, try await updater.latest())
                 }.value
                 if let release = result.1 {
-                    availableUpdate = (result.0, release)
+                    if manual || UserDefaults.standard.string(forKey: declinedUpdateKey) != release.tag_name {
+                        availableUpdate = (result.0, release)
+                    }
                 } else if manual {
                     showAlert("已是最新版本", "当前没有可用的新版。")
                 }
@@ -394,10 +404,12 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let alert = NSAlert()
         alert.messageText = "发现 snap-gif \(release.version)"
         alert.informativeText = "下载并安装后，snap-gif 会自动重新打开。"
-        alert.addButton(withTitle: "下载并安装")
-        alert.addButton(withTitle: "稍后")
+        alert.addButton(withTitle: "是，下载并安装")
+        let decline = alert.addButton(withTitle: "否，暂不更新")
+        decline.keyEquivalent = "\u{1b}"
         NSApp.activate()
         guard alert.runModal() == .alertFirstButtonReturn else {
+            UserDefaults.standard.set(release.tag_name, forKey: declinedUpdateKey)
             busy = false
             refresh()
             return

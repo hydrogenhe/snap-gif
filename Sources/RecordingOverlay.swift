@@ -9,6 +9,10 @@ final class RecordingOverlay: NSObject {
     private let label = NSTextField(labelWithString: "准备录制")
     private let onAction: () -> Void
     private let onCancel: () -> Void
+    private var onCopy: (() -> Bool)?
+    private var onDone: (() -> Void)?
+    private var completionDetails: String?
+    var isComplete: Bool { onDone != nil }
 
     init(region: CGRect, screen: NSScreen, action: @escaping () -> Void, cancel: @escaping () -> Void) {
         let rect = CGRect(x: screen.frame.minX + region.minX,
@@ -30,7 +34,7 @@ final class RecordingOverlay: NSObject {
         outline.contentView = border
 
         let visible = screen.visibleFrame
-        let size = CGSize(width: 282, height: 46)
+        let size = CGSize(width: 424, height: 46)
         let x = min(max(rect.midX - size.width / 2, visible.minX), visible.maxX - size.width)
         let below = rect.minY - size.height - 10
         let above = rect.maxY + 10
@@ -53,6 +57,7 @@ final class RecordingOverlay: NSObject {
         actionButton.action = #selector(performAction)
         cancelButton.target = self
         cancelButton.action = #selector(performCancel)
+        actionButton.bezelColor = .systemIndigo
         label.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
         let space = NSView()
         space.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -60,14 +65,11 @@ final class RecordingOverlay: NSObject {
         row.alignment = .centerY
         row.spacing = 8
         row.translatesAutoresizingMaskIntoConstraints = false
-        if let content = panel.contentView {
-            content.addSubview(row)
-            NSLayoutConstraint.activate([
-                row.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
-                row.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
-                row.centerYAnchor.constraint(equalTo: content.centerYAnchor)
-            ])
-        }
+        let surface = InsetSurface(row, padding: 9, radius: 10)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.contentView = surface
     }
 
     func show() {
@@ -76,6 +78,7 @@ final class RecordingOverlay: NSObject {
     }
 
     func update(recording: Bool, stopping: Bool) {
+        guard !isComplete else { return }
         label.stringValue = stopping ? "正在生成 GIF" : (recording ? "正在录制" : "准备录制")
         actionButton.title = recording ? "停止并保存" : "开始"
         actionButton.isEnabled = !stopping
@@ -83,11 +86,36 @@ final class RecordingOverlay: NSObject {
         outline.contentView?.layer?.borderColor = (recording ? NSColor.systemRed : .systemBlue).cgColor
     }
 
+    func finish(details: String?, copy: @escaping () -> Bool, done: @escaping () -> Void) {
+        onCopy = copy
+        onDone = done
+        completionDetails = details
+        updateCompletionLabel("已保存")
+        actionButton.title = "复制 GIF"
+        actionButton.isEnabled = true
+        cancelButton.title = "完成"
+        cancelButton.isHidden = false
+        outline.contentView?.layer?.borderColor = NSColor.systemBlue.cgColor
+    }
+
+    private func updateCompletionLabel(_ status: String) {
+        label.stringValue = completionDetails.map { "\(status) · \($0)" } ?? status
+    }
+
     func close() {
         panel.orderOut(nil)
         outline.orderOut(nil)
     }
 
-    @objc private func performAction() { onAction() }
-    @objc private func performCancel() { onCancel() }
+    @objc private func performAction() {
+        if let onCopy {
+            if onCopy() { updateCompletionLabel("已复制") }
+        } else {
+            onAction()
+        }
+    }
+
+    @objc private func performCancel() {
+        if let onDone { onDone() } else { onCancel() }
+    }
 }

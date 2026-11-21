@@ -71,7 +71,7 @@ final class SelectionView: NSView {
     override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
 }
 
-final class SelectionWindow: NSWindow {
+final class SelectionWindow: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 }
@@ -118,6 +118,8 @@ func encode(_ frames: [Frame], end: TimeInterval, gif: Bool) throws -> Data {
 final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private lazy var status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private var controls: NSWindow?
+    private var didFinishLaunching = false
+    private var quietLaunch = false
     private var controlStatus: NSTextField?
     private var controlScreenshot: NSButton?
     private var controlGIF: NSButton?
@@ -158,8 +160,13 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         } else {
             state = "无法监听快捷键，请重新打开 App"
         }
+        let launchReason = NSAppleEventManager.shared().currentAppleEvent?
+            .paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue
+        quietLaunch = launchReason == OSType(keyAELaunchedAsLogInItem) ||
+            launchReason == OSType(keyAELaunchedAsServiceItem)
+        didFinishLaunching = true
         refresh()
-        showControls()
+        if NSApp.isActive && !quietLaunch { presentControls(activate: false) }
         startUpdateCheck(manual: false)
         updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 60 * 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.startUpdateCheck(manual: false) }
@@ -173,7 +180,15 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        if didFinishLaunching && controls == nil && !quietLaunch && !busy {
+            presentControls(activate: false)
+        }
         refreshPermissionButton()
+        refresh()
+    }
+
+    func applicationDidResignActive(_ notification: Notification) {
+        settings?.orderOut(nil)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -221,13 +236,17 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return true
     }
 
-    @objc private func showControls() {
+    @objc private func showControls() { presentControls(activate: true) }
+
+    private func presentControls(activate: Bool) {
         if controls == nil {
             let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 708, height: 292),
                                   styleMask: [.titled, .closable, .miniaturizable],
                                   backing: .buffered, defer: false)
             window.title = "snap-gif"
             window.isReleasedWhenClosed = false
+            window.isRestorable = false
+            window.delegate = self
             window.titleVisibility = .hidden
 
             let title = NSTextField(labelWithString: "snap-gif")
@@ -346,7 +365,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         refresh()
         refreshPermissionButton()
         controls?.deminiaturize(nil)
-        NSApp.activate()
+        if activate { NSApp.activate() }
         controls?.makeKeyAndOrderFront(nil)
     }
 
@@ -487,12 +506,15 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         controlUpdate?.isEnabled = update.isEnabled
         menu.addItem(withTitle: "退出 snap-gif", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         status.menu = menu
-        if availableUpdate != nil && !busy && pendingGIF == nil && editing == nil && overlay?.isComplete != true {
+        if availableUpdate != nil && canPresentUpdate {
             DispatchQueue.main.async { [weak self] in self?.offerUpdate() }
         }
     }
 
-    @objc private func checkUpdates() { startUpdateCheck(manual: true) }
+    @objc private func checkUpdates() {
+        if !NSApp.isActive || controls?.isKeyWindow != true { showControls() }
+        startUpdateCheck(manual: true)
+    }
 
     private func startUpdateCheck(manual: Bool) {
         guard !checkingUpdate, !updateInstalling, availableUpdate == nil else { return }
@@ -510,17 +532,21 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         availableUpdate = (result.0, release)
                     }
                 } else if manual {
-                    showAlert("已是最新版本", "当前没有可用的新版。")
+                    state = "已是最新版本"
                 }
             } catch {
-                if manual { showAlert("无法检查更新", error.localizedDescription) }
+                if manual { state = "检查更新失败，请重试" }
             }
         }
     }
 
+    private var canPresentUpdate: Bool {
+        NSApp.isActive && controls?.isKeyWindow == true && controls?.attachedSheet == nil &&
+            !busy && pendingGIF == nil && editing == nil && overlay?.isComplete != true
+    }
+
     private func offerUpdate() {
-        guard !busy, pendingGIF == nil, editing == nil, overlay?.isComplete != true,
-              let (updater, release) = availableUpdate else { return }
+        guard canPresentUpdate, let controls, let (updater, release) = availableUpdate else { return }
         availableUpdate = nil
         busy = true
         refresh()
@@ -530,14 +556,19 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         alert.addButton(withTitle: "是，下载并安装")
         let decline = alert.addButton(withTitle: "否，暂不更新")
         decline.keyEquivalent = "\u{1b}"
-        NSApp.activate()
-        guard alert.runModal() == .alertFirstButtonReturn else {
-            UserDefaults.standard.set(release.tag_name, forKey: declinedUpdateKey)
-            busy = false
-            refresh()
-            return
+        alert.beginSheetModal(for: controls) { [weak self] outcome in
+            guard let self else { return }
+            guard outcome == .alertFirstButtonReturn else {
+                UserDefaults.standard.set(release.tag_name, forKey: declinedUpdateKey)
+                busy = false
+                refresh()
+                return
+            }
+            installUpdate(updater, release: release)
         }
+    }
 
+    private func installUpdate(_ updater: ReleaseUpdater, release: GitHubRelease) {
         updateInstalling = true
         state = "正在下载并安装 \(release.version)…"
         refresh()
@@ -581,14 +612,16 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         overlay?.close()
         overlay = nil
         busy = true
-        let returnToControls = controls?.isVisible == true
+        let returnToControls = NSApp.isActive && controls?.isVisible == true
         controls?.orderOut(nil)
         state = "正在框选"
         refresh()
-        let window = SelectionWindow(contentRect: screen.frame, styleMask: .borderless,
+        let window = SelectionWindow(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
                                      backing: .buffered, defer: false, screen: screen)
         window.setFrame(screen.frame, display: false)
         window.level = .screenSaver
+        window.hidesOnDeactivate = false
+        window.isRestorable = false
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
@@ -610,11 +643,10 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             } else {
                 busy = false
                 state = "已取消"
-                if returnToControls { showControls() } else { refresh() }
+                refresh()
             }
         }
         selection = window
-        NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(view)
     }
@@ -630,7 +662,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             overlay = nil
             busy = false
             state = "已取消"
-            if returnToControls { showControls() } else { refresh() }
+            refresh()
         })
         readyToRecord = { [weak self] in
             guard let self else { return }
@@ -695,7 +727,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             } else {
                 overlay?.close()
                 overlay = nil
-                if returnToControls { showControls() } else { refresh() }
+                if returnToControls && NSApp.isActive { presentControls(activate: false) } else { refresh() }
             }
         }
         let gif = action == .gif
@@ -766,7 +798,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     guard let self else { return }
                     overlay?.close()
                     overlay = nil
-                    if returnToControls { showControls() } else { refresh() }
+                    if returnToControls && NSApp.isActive { presentControls(activate: false) } else { refresh() }
                 })
             } else {
                 try copyCapture(data)
@@ -809,6 +841,8 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                 styleMask: [.titled, .closable], backing: .buffered, defer: false)
             panel.title = "snap-gif 快捷键"
             panel.isReleasedWhenClosed = false
+            panel.isRestorable = false
+            panel.hidesOnDeactivate = true
             panel.delegate = self
             let stack = NSStackView()
             stack.orientation = .vertical
@@ -891,6 +925,12 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         UserDefaults.standard.set(["key": candidate.key, "modifiers": candidate.modifiers, "label": candidate.label],
                                   forKey: "shortcut.\(action.rawValue)")
         return true
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        if let window = notification.object as? NSWindow, window === controls {
+            refresh()
+        }
     }
 
     func windowDidResignKey(_ notification: Notification) {

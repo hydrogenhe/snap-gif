@@ -149,21 +149,14 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let signature: OSType = 0x53474946
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        var event = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
-            guard let event, let context else { return OSStatus(eventNotHandledErr) }
-            var identifier = EventHotKeyID()
-            let result = GetEventParameter(event, EventParamName(kEventParamDirectObject),
-                                           EventParamType(typeEventHotKeyID), nil,
-                                           MemoryLayout<EventHotKeyID>.size, nil, &identifier)
-            guard result == noErr, identifier.signature == 0x53474946,
-                  let action = Action(rawValue: identifier.id) else { return OSStatus(eventNotHandledErr) }
-            let app = Unmanaged<App>.fromOpaque(context).takeUnretainedValue()
-            DispatchQueue.main.async { app.perform(action) }
-            return noErr
-        }, 1, &event, Unmanaged.passUnretained(self).toOpaque(), &handler)
-        let unavailable = Action.allCases.filter { !register($0, shortcut($0)) }
-        if !unavailable.isEmpty { state = "部分快捷键不可用，请在设置中修改" }
+        if installHotKeyHandler() {
+            let unavailable = Action.allCases.filter { !register($0, shortcut($0)) }
+            if !unavailable.isEmpty {
+                state = "快捷键不可用：\(unavailable.map { shortcut($0).label }.joined(separator: "、"))"
+            }
+        } else {
+            state = "无法监听快捷键，请重新打开 App"
+        }
         refresh()
         showControls()
         startUpdateCheck(manual: false)
@@ -184,6 +177,26 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         updateTimer?.invalidate()
+        for reference in hotkeys.values { UnregisterEventHotKey(reference) }
+        if let handler { RemoveEventHandler(handler) }
+    }
+
+    private func installHotKeyHandler() -> Bool {
+        if handler != nil { return true }
+        var event = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))
+        let result = InstallEventHandler(GetEventDispatcherTarget(), { _, event, context in
+            guard let event, let context else { return OSStatus(eventNotHandledErr) }
+            var identifier = EventHotKeyID()
+            let result = GetEventParameter(event, EventParamName(kEventParamDirectObject),
+                                           EventParamType(typeEventHotKeyID), nil,
+                                           MemoryLayout<EventHotKeyID>.size, nil, &identifier)
+            guard result == noErr, identifier.signature == 0x53474946,
+                  let action = Action(rawValue: identifier.id) else { return OSStatus(eventNotHandledErr) }
+            let app = Unmanaged<App>.fromOpaque(context).takeUnretainedValue()
+            DispatchQueue.main.async { app.perform(action) }
+            return noErr
+        }, 1, &event, Unmanaged.passUnretained(self).toOpaque(), &handler)
+        return result == noErr && handler != nil
     }
 
     private func shortcut(_ action: Action) -> Shortcut {
@@ -197,10 +210,11 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func register(_ action: Action, _ shortcut: Shortcut) -> Bool {
+        guard installHotKeyHandler() else { return false }
         var reference: EventHotKeyRef?
         let result = RegisterEventHotKey(shortcut.key, shortcut.modifiers,
                                          EventHotKeyID(signature: signature, id: action.rawValue),
-                                         GetApplicationEventTarget(), 0, &reference)
+                                         GetEventDispatcherTarget(), 0, &reference)
         guard result == noErr, let reference else { return false }
         hotkeys[action] = reference
         return true
@@ -470,11 +484,6 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
         guard !busy, let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) else { return }
-        guard CGPreflightScreenCaptureAccess() else {
-            _ = CGRequestScreenCaptureAccess()
-            showAlert("需要屏幕录制权限", "在「系统设置 → 隐私与安全性 → 屏幕与系统音频录制」允许 snap-gif，然后重新打开应用。")
-            return
-        }
         guard let display = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value else { return }
         busy = true
         let returnToControls = controls?.isVisible == true
@@ -651,7 +660,24 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         } catch {
             state = pendingGIF != nil ? "无法存入图库 · 可另存 GIF" : "捕获失败"
-            showAlert("无法完成捕获", error.localizedDescription)
+            overlay?.close()
+            if (error as? SCStreamError)?.code == .userDeclined {
+                showCapturePermissionAlert()
+            } else {
+                showAlert("无法完成捕获", error.localizedDescription)
+            }
+        }
+    }
+
+    private func showCapturePermissionAlert() {
+        let alert = NSAlert()
+        alert.messageText = "macOS 拒绝了屏幕采集"
+        alert.informativeText = "请在「录屏与系统录音」中允许 snap-gif。若开关已打开，请先完全退出再重新打开 App。"
+        alert.addButton(withTitle: "打开录屏设置")
+        alert.addButton(withTitle: "取消")
+        NSApp.activate()
+        if alert.runModal() == .alertFirstButtonReturn {
+            requestScreenRecordingPermission()
         }
     }
 
@@ -702,6 +728,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             settings = panel
         }
         NSApp.activate()
+        updateShortcutButtons()
         settings?.makeKeyAndOrderFront(nil)
     }
 
@@ -760,17 +787,22 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if editing != nil { finishEditing() }
     }
 
+    private func updateShortcutButtons() {
+        for action in Action.allCases where action != editing {
+            let label = shortcut(action).label
+            buttons[action]?.title = hotkeys[action] == nil ? "\(label) · 不可用" : label
+        }
+    }
+
     private func finishEditing() {
         if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
         if editing != nil {
             for action in Action.allCases where hotkeys[action] == nil {
                 _ = register(action, shortcut(action))
             }
-            for action in Action.allCases {
-                buttons[action]?.title = shortcut(action).label
-            }
         }
         editing = nil
+        updateShortcutButtons()
         refresh()
     }
 }

@@ -1,5 +1,4 @@
 import AppKit
-import ImageIO
 import UniformTypeIdentifiers
 
 struct GIFStore {
@@ -51,14 +50,14 @@ struct GIFStore {
 }
 
 @MainActor
-func copyCapture(_ data: Data, gif: Bool, to pasteboard: NSPasteboard = .general) throws {
+func copyCapture(_ data: Data, gifFile: URL? = nil, to pasteboard: NSPasteboard = .general) throws {
     let item = NSPasteboardItem()
-    guard item.setData(data, forType: gif ? .init(UTType.gif.identifier) : .png)
-    else { throw CaptureError.clipboard }
-    if gif, let source = CGImageSourceCreateWithData(data as CFData, nil),
-       let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
-       let preview = try? encode([Frame(image: image, time: 0)], end: 0, gif: false) {
-        item.setData(preview, forType: .png)
+    let type: NSPasteboard.PasteboardType = gifFile == nil ? .png : .init(UTType.gif.identifier)
+    guard item.setData(data, forType: type) else { throw CaptureError.clipboard }
+    if let gifFile {
+        guard item.setString(gifFile.absoluteString, forType: .fileURL) else {
+            throw CaptureError.clipboard
+        }
     }
     pasteboard.clearContents()
     guard pasteboard.writeObjects([item]) else { throw CaptureError.clipboard }
@@ -175,7 +174,7 @@ final class GIFLibraryView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     @objc private func copySelected() {
         guard let file = selected else { return }
         do {
-            try copyCapture(Data(contentsOf: file), gif: true)
+            try copyCapture(Data(contentsOf: file), gifFile: file)
             caption.stringValue = "GIF 已复制"
         } catch {
             showError("无法复制 GIF", error)

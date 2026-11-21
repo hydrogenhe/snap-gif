@@ -648,14 +648,14 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 if returnToControls { setLibraryExpanded(true, select: file) }
                 else { libraryView?.reload(select: file) }
                 do {
-                    try copyCapture(data, gif: true)
+                    try copyCapture(data, gifFile: file)
                     state = "GIF 已保存并复制"
                 } catch {
                     state = "GIF 已保存"
                     showAlert("已保存 GIF，复制失败", error.localizedDescription)
                 }
             } else {
-                try copyCapture(data, gif: false)
+                try copyCapture(data)
                 state = "截图已复制"
             }
         } catch {

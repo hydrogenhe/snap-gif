@@ -2,7 +2,7 @@ import Foundation
 import ImageIO
 
 struct GIFRecordingSettings {
-    static let frameRates = [4, 8, 12]
+    static let frameRates = [4, 8, 12, 16]
     static let resolutions = [480, 720, 960]
     static let frameRateKey = "gifFrameRate"
     static let resolutionKey = "gifResolution"

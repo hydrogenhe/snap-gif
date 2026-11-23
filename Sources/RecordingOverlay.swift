@@ -11,7 +11,6 @@ final class RecordingOverlay: NSObject {
     private let onCancel: () -> Void
     private var onCopy: (() -> Bool)?
     private var onDone: (() -> Void)?
-    private var completionDetails: String?
     var isComplete: Bool { onDone != nil }
 
     init(region: CGRect, screen: NSScreen, action: @escaping () -> Void, cancel: @escaping () -> Void) {
@@ -89,17 +88,12 @@ final class RecordingOverlay: NSObject {
     func finish(details: String?, copy: @escaping () -> Bool, done: @escaping () -> Void) {
         onCopy = copy
         onDone = done
-        completionDetails = details
-        updateCompletionLabel("已保存")
+        label.stringValue = details.map { "已保存 · \($0)" } ?? "已保存"
         actionButton.title = "复制 GIF"
         actionButton.isEnabled = true
         cancelButton.title = "完成"
         cancelButton.isHidden = false
         outline.contentView?.layer?.borderColor = NSColor.systemBlue.cgColor
-    }
-
-    private func updateCompletionLabel(_ status: String) {
-        label.stringValue = completionDetails.map { "\(status) · \($0)" } ?? status
     }
 
     func close() {
@@ -109,7 +103,7 @@ final class RecordingOverlay: NSObject {
 
     @objc private func performAction() {
         if let onCopy {
-            if onCopy() { updateCompletionLabel("已复制") }
+            if onCopy() { onDone?() }
         } else {
             onAction()
         }

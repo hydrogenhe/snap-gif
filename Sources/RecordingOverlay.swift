@@ -6,12 +6,13 @@ final class RecordingOverlay: NSObject {
     private let panel: NSPanel
     private let actionButton: NSButton
     private let cancelButton: NSButton
+    private let saveButton: NSButton
     private let label = NSTextField(labelWithString: "准备录制")
     private let onAction: () -> Void
     private let onCancel: () -> Void
-    private var onCopy: (() -> Bool)?
-    private var onDone: (() -> Void)?
-    var isComplete: Bool { onDone != nil }
+    private var onCopy: (() -> Void)?
+    private var onSave: (() -> Void)?
+    var isComplete: Bool { onCopy != nil }
 
     init(region: CGRect, screen: NSScreen, action: @escaping () -> Void, cancel: @escaping () -> Void) {
         let rect = CGRect(x: screen.frame.minX + region.minX,
@@ -33,7 +34,7 @@ final class RecordingOverlay: NSObject {
         outline.contentView = border
 
         let visible = screen.visibleFrame
-        let size = CGSize(width: 424, height: 46)
+        let size = CGSize(width: min(492, visible.width), height: 46)
         let x = min(max(rect.midX - size.width / 2, visible.minX), visible.maxX - size.width)
         let below = rect.minY - size.height - 10
         let above = rect.maxY + 10
@@ -51,16 +52,20 @@ final class RecordingOverlay: NSObject {
 
         actionButton = NSButton(title: "开始", target: nil, action: nil)
         cancelButton = NSButton(title: "取消", target: nil, action: nil)
+        saveButton = NSButton(title: "保存并复制", target: nil, action: nil)
         super.init()
         actionButton.target = self
         actionButton.action = #selector(performAction)
         cancelButton.target = self
         cancelButton.action = #selector(performCancel)
+        saveButton.target = self
+        saveButton.action = #selector(performSave)
+        saveButton.isHidden = true
         actionButton.bezelColor = .systemIndigo
         label.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
         let space = NSView()
         space.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let row = NSStackView(views: [label, space, cancelButton, actionButton])
+        let row = NSStackView(views: [label, space, cancelButton, saveButton, actionButton])
         row.alignment = .centerY
         row.spacing = 8
         row.translatesAutoresizingMaskIntoConstraints = false
@@ -79,20 +84,22 @@ final class RecordingOverlay: NSObject {
     func update(recording: Bool, stopping: Bool) {
         guard !isComplete else { return }
         label.stringValue = stopping ? "正在生成 GIF" : (recording ? "正在录制" : "准备录制")
-        actionButton.title = recording ? "停止并保存" : "开始"
+        actionButton.title = recording ? "停止" : "开始"
         actionButton.isEnabled = !stopping
-        cancelButton.isHidden = recording || stopping
+        cancelButton.title = recording ? "停止并丢弃" : "取消"
+        cancelButton.isHidden = stopping
         outline.contentView?.layer?.borderColor = (recording ? NSColor.systemRed : .systemBlue).cgColor
     }
 
-    func finish(details: String?, copy: @escaping () -> Bool, done: @escaping () -> Void) {
+    func finish(details: String?, copy: @escaping () -> Void, save: @escaping () -> Void) {
         onCopy = copy
-        onDone = done
-        label.stringValue = details.map { "已保存 · \($0)" } ?? "已保存"
-        actionButton.title = "复制 GIF"
+        onSave = save
+        label.stringValue = details ?? "GIF 已生成"
+        actionButton.title = "只复制"
         actionButton.isEnabled = true
-        cancelButton.title = "完成"
+        cancelButton.title = "丢弃"
         cancelButton.isHidden = false
+        saveButton.isHidden = false
         outline.contentView?.layer?.borderColor = NSColor.systemBlue.cgColor
     }
 
@@ -102,14 +109,9 @@ final class RecordingOverlay: NSObject {
     }
 
     @objc private func performAction() {
-        if let onCopy {
-            if onCopy() { onDone?() }
-        } else {
-            onAction()
-        }
+        if let onCopy { onCopy() } else { onAction() }
     }
 
-    @objc private func performCancel() {
-        if let onDone { onDone() } else { onCancel() }
-    }
+    @objc private func performCancel() { onCancel() }
+    @objc private func performSave() { onSave?() }
 }

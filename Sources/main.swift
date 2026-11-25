@@ -156,6 +156,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var busy = false
     private var recording = false
     private var pausedAt: TimeInterval?
+    private var discardRecording = false
     private var pendingGIF: Data?
     private var updateTimer: Timer?
     private let declinedUpdateKey = "declinedUpdateTag"
@@ -269,7 +270,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             icon.imageScaling = .scaleProportionallyUpOrDown
             icon.widthAnchor.constraint(equalToConstant: 48).isActive = true
             icon.heightAnchor.constraint(equalToConstant: 48).isActive = true
-            let summary = NSTextField(wrappingLabelWithString: "先框选区域，再点「开始」。录完自动保存并复制。")
+            let summary = NSTextField(wrappingLabelWithString: "先框选区域，再点「开始」。停止后可只复制，或保存并复制。")
             summary.textColor = .secondaryLabelColor
             let screenshot = symbolButton("截图", symbol: "camera", target: self, action: #selector(captureScreenshot))
             let gif = symbolButton("录制区域 GIF", symbol: "record.circle", target: self, action: #selector(captureGIF))
@@ -491,11 +492,11 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                        action: #selector(captureScreenshot), keyEquivalent: "")
         screenshot.target = self
         overlay?.update(recording: recording, stopping: pausedAt != nil)
-        let gifTitle = recording ? "停止并保存" : (readyToRecord != nil ? "开始录制" :
-            (pendingGIF == nil ? Action.gif.title : "保存 GIF…"))
+        let gifTitle = recording ? "停止录制" : (readyToRecord != nil ? "开始录制" :
+            (pendingGIF == nil ? Action.gif.title : "只复制 GIF"))
         controlStatus?.stringValue = state
         controlScreenshot?.title = "截图  \(shortcut(.screenshot).label)"
-        controlScreenshot?.isEnabled = !busy
+        controlScreenshot?.isEnabled = !busy && pendingGIF == nil
         storageButton?.isEnabled = !busy
         controlGIF?.title = "\(gifTitle)  \(shortcut(.gif).label)"
         controlGIF?.isEnabled = (!busy || recording || readyToRecord != nil) && pausedAt == nil
@@ -503,7 +504,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                 action: #selector(captureGIF), keyEquivalent: "")
         gif.target = self
         menu.autoenablesItems = false
-        screenshot.isEnabled = !busy
+        screenshot.isEnabled = !busy && pendingGIF == nil
         gif.isEnabled = (!busy || recording || readyToRecord != nil) && pausedAt == nil
         if pendingGIF != nil && !busy {
             let discard = menu.addItem(withTitle: "丢弃本次录制", action: #selector(discardGIF), keyEquivalent: "")
@@ -618,10 +619,10 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
         if action == .gif, pendingGIF != nil, !busy {
-            saveGIF()
+            resolvePendingGIF(save: false)
             return
         }
-        guard !busy, let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) else { return }
+        guard !busy, pendingGIF == nil, let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) else { return }
         guard let display = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value else { return }
         overlay?.close()
         overlay = nil
@@ -671,16 +672,12 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.perform(.gif)
         }, cancel: { [weak self] in
             guard let self else { return }
-            readyToRecord = nil
-            overlay?.close()
-            overlay = nil
-            busy = false
-            state = "已取消"
-            refresh()
+            cancelRecordingOverlay()
         })
         readyToRecord = { [weak self] in
             guard let self else { return }
             pausedAt = nil
+            discardRecording = false
             recording = true
             state = "正在录制 GIF · 最长 15 秒"
             refresh()
@@ -692,63 +689,90 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         overlay?.show()
     }
 
-    @objc private func discardGIF() {
-        guard pendingGIF != nil, !busy else { return }
-        pendingGIF = nil
-        state = "已丢弃录制"
-        refresh()
-    }
-
-    private func saveGIF() {
-        guard let data = pendingGIF else { return }
-        busy = true
-        refresh()
-        defer { busy = false; refresh() }
-
-        let panel = NSSavePanel()
-        panel.title = "保存录制"
-        panel.allowedContentTypes = [.gif]
-        panel.canCreateDirectories = true
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
-        panel.nameFieldStringValue = "snap-gif \(formatter.string(from: Date())).gif"
-        NSApp.activate()
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-
-        do {
-            try savePendingGIF(data, to: url)
-        } catch {
-            showAlert("无法保存 GIF", error.localizedDescription)
+    private func cancelRecordingOverlay() {
+        if recording {
+            guard pausedAt == nil else { return }
+            discardRecording = true
+            pausedAt = ProcessInfo.processInfo.systemUptime
+            state = "已丢弃录制"
+            overlay?.close()
+            refresh()
+        } else if pendingGIF != nil {
+            discardGIF()
+        } else {
+            readyToRecord = nil
+            busy = false
+            closeGIFOverlay(status: "已取消")
         }
     }
 
-    private func savePendingGIF(_ data: Data, to url: URL) throws {
-        try data.write(to: url, options: .atomic)
+    @objc private func discardGIF() {
+        guard pendingGIF != nil && !busy else { return }
         pendingGIF = nil
-        state = "已保存 \(url.lastPathComponent)"
+        closeGIFOverlay(status: "已丢弃录制")
+    }
+
+    private func closeGIFOverlay(status: String) {
+        overlay?.close()
+        overlay = nil
+        state = status
+        refresh()
+    }
+
+    private func resolvePendingGIF(save: Bool) {
+        guard let data = pendingGIF, !busy else { return }
+        if save {
+            let file: URL
+            do {
+                file = try gifStore.save(data)
+            } catch {
+                showAlert("无法保存 GIF", error.localizedDescription)
+                return
+            }
+            libraryView?.reload(select: file)
+            pendingGIF = nil
+            do {
+                try copyCapture(data, gifFile: file)
+                closeGIFOverlay(status: "GIF 已保存并复制")
+            } catch {
+                closeGIFOverlay(status: "GIF 已保存 · 可在图库复制")
+                showAlert("GIF 已保存，但复制失败", error.localizedDescription)
+            }
+        } else {
+            do {
+                try copyGIFWithoutSaving(data)
+                pendingGIF = nil
+                closeGIFOverlay(status: "已复制 GIF")
+            } catch {
+                showAlert("无法复制 GIF", error.localizedDescription)
+            }
+        }
     }
 
     private func capture(_ action: Action, display: CGDirectDisplayID, region: CGRect, scale: CGFloat,
                          returnToControls: Bool) async {
         defer {
+            let wasDiscarded = discardRecording
             recording = false
             pausedAt = nil
             readyToRecord = nil
+            discardRecording = false
             busy = false
             if overlay?.isComplete == true {
                 refresh()
             } else {
                 overlay?.close()
                 overlay = nil
-                if returnToControls && NSApp.isActive { presentControls(activate: false) } else { refresh() }
+                if !wasDiscarded && returnToControls && NSApp.isActive { presentControls(activate: false) } else { refresh() }
             }
         }
         let gif = action == .gif
         let options = GIFRecordingSettings()
         do {
             try await Task.sleep(for: .milliseconds(160))
+            guard !discardRecording else { return }
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+            guard !discardRecording else { return }
             guard let screen = content.displays.first(where: { $0.displayID == display }) else { throw CaptureError.display }
             let ownApplications = content.applications.filter {
                 $0.processID == ProcessInfo.processInfo.processIdentifier
@@ -787,6 +811,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 frames = captured
                 end = (pausedAt ?? ProcessInfo.processInfo.systemUptime) - start
             }
+            guard !discardRecording else { return }
             recording = false
             if gif { pausedAt = ProcessInfo.processInfo.systemUptime }
             state = gif ? "录制结束 · 正在生成 GIF" : "正在复制到剪贴板"
@@ -795,39 +820,20 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 try encode(frames, end: end, gif: gif, highRateFPS: highRate ? options.fps : nil)
             }.value
             if gif {
-                // Retain the bytes for manual recovery if the library cannot be written.
                 pendingGIF = data
-                let file = try gifStore.save(data)
-                pendingGIF = nil
-                if returnToControls { setLibraryExpanded(true, select: file) }
-                else { libraryView?.reload(select: file) }
-                do {
-                    try copyCapture(data, gifFile: file)
-                    state = "GIF 已保存并复制"
-                } catch {
-                    state = "GIF 已保存 · 可手动复制"
-                }
-                overlay?.finish(details: GIFOutputDetails(file: file)?.summary, copy: { [weak self] in
-                    do {
-                        try copyCapture(Data(contentsOf: file), gifFile: file)
-                        self?.state = "GIF 已复制"
-                        return true
-                    } catch {
-                        self?.showAlert("无法复制 GIF", error.localizedDescription)
-                        return false
-                    }
-                }, done: { [weak self] in
-                    guard let self else { return }
-                    overlay?.close()
-                    overlay = nil
-                    if returnToControls && NSApp.isActive { presentControls(activate: false) } else { refresh() }
+                state = "GIF 已生成 · 等待选择"
+                overlay?.finish(details: GIFOutputDetails(data: data)?.summary, copy: { [weak self] in
+                    self?.resolvePendingGIF(save: false)
+                }, save: { [weak self] in
+                    self?.resolvePendingGIF(save: true)
                 })
             } else {
                 try copyCapture(data)
                 state = "截图已复制"
             }
         } catch {
-            state = pendingGIF != nil ? "无法存入图库 · 可另存 GIF" : "捕获失败"
+            guard !discardRecording else { return }
+            state = "捕获失败"
             overlay?.close()
             if (error as? SCStreamError)?.code == .userDeclined {
                 showCapturePermissionAlert()
@@ -849,8 +855,10 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         try stream.addStreamOutput(receiver, type: .screen, sampleHandlerQueue: receiver.queue)
         try await stream.startCapture()
         let start = ProcessInfo.processInfo.systemUptime
-        state = "正在录制 GIF · \(fps) fps · 最长 \(String(format: "%.1f", budget.duration)) 秒"
-        refresh()
+        if !discardRecording {
+            state = "正在录制 GIF · \(fps) fps · 最长 \(String(format: "%.1f", budget.duration)) 秒"
+            refresh()
+        }
         while !Task.isCancelled && pausedAt == nil && !receiver.didFinish &&
             ProcessInfo.processInfo.systemUptime - start < budget.duration {
             try? await Task.sleep(for: .milliseconds(20))

@@ -35,13 +35,22 @@ struct GIFOutputDetails {
 
     init?(file: URL) {
         guard let source = CGImageSourceCreateWithURL(file as CFURL, nil),
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
-              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
               let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize else { return nil }
+        self.init(source: source, byteCount: Int64(size))
+    }
+
+    init?(data: Data) {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        self.init(source: source, byteCount: Int64(data.count))
+    }
+
+    private init?(source: CGImageSource, byteCount: Int64) {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue else { return nil }
         dimensions = CGSize(width: width, height: height)
         frameCount = CGImageSourceGetCount(source)
-        byteCount = Int64(size)
+        self.byteCount = byteCount
     }
 
     var summary: String {

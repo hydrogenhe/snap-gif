@@ -80,6 +80,30 @@ func copyCapture(_ data: Data, gifFile: URL? = nil, to pasteboard: NSPasteboard 
 }
 
 @MainActor
+func copyGIFWithoutSaving(_ data: Data, to pasteboard: NSPasteboard = .general,
+                          directory: URL = URL.cachesDirectory.appending(path: "snap-gif/Clipboard")) throws {
+    // The file representation must survive after the overlay closes, including for a later paste.
+    let manager = FileManager.default
+    try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+    let file = directory.appending(path: "snap-gif-copy-\(UUID().uuidString).gif")
+    try data.write(to: file, options: .atomic)
+    do {
+        try copyCapture(data, gifFile: file, to: pasteboard)
+    } catch {
+        try? manager.removeItem(at: file)
+        throw error
+    }
+    if let files = try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
+        let prefix = "snap-gif-copy-"
+        for old in files where old.lastPathComponent != file.lastPathComponent && old.pathExtension == "gif" &&
+            old.lastPathComponent.hasPrefix(prefix) &&
+            UUID(uuidString: String(old.deletingPathExtension().lastPathComponent.dropFirst(prefix.count))) != nil {
+            try? manager.removeItem(at: old)
+        }
+    }
+}
+
+@MainActor
 final class GIFLibraryView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private var store: GIFStore
     private let table = NSTableView()

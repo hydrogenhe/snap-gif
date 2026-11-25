@@ -2,7 +2,7 @@ import Foundation
 import ImageIO
 
 struct GIFRecordingSettings {
-    static let frameRates = [4, 8, 12, 16]
+    static let frameRates = [4, 8, 12, 16, 30, 60]
     static let resolutions = [480, 720, 960]
     static let frameRateKey = "gifFrameRate"
     static let resolutionKey = "gifResolution"
@@ -15,6 +15,10 @@ struct GIFRecordingSettings {
         let resolution = defaults.integer(forKey: Self.resolutionKey)
         fps = Self.frameRates.contains(rate) ? rate : 8
         longestEdge = Self.resolutions.contains(resolution) ? resolution : 720
+    }
+
+    static func label(for fps: Int) -> String {
+        fps == 60 ? "60 fps（播放视应用而定）" : "\(fps) fps"
     }
 
     var frameInterval: TimeInterval { 1 / Double(fps) }

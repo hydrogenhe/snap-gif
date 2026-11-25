@@ -1,5 +1,7 @@
 import AppKit
 import Carbon
+import CoreMedia
+import CoreVideo
 import ScreenCaptureKit
 import ImageIO
 import UniformTypeIdentifiers
@@ -92,7 +94,7 @@ struct Frame {
     let time: TimeInterval
 }
 
-func encode(_ frames: [Frame], end: TimeInterval, gif: Bool) throws -> Data {
+func encode(_ frames: [Frame], end: TimeInterval, gif: Bool, highRateFPS: Int? = nil) throws -> Data {
     let bytes = NSMutableData()
     let type = gif ? UTType.gif : UTType.png
     guard !frames.isEmpty,
@@ -103,11 +105,22 @@ func encode(_ frames: [Frame], end: TimeInterval, gif: Bool) throws -> Data {
             kCGImagePropertyGIFLoopCount: 0
         ]] as CFDictionary)
     }
+    var writtenTicks = 0
     for (index, frame) in frames.enumerated() {
         let next = index + 1 < frames.count ? frames[index + 1].time : end
-        let props: CFDictionary? = gif ? [kCGImagePropertyGIFDictionary: [
-            kCGImagePropertyGIFDelayTime: max(0.02, next - frame.time)
-        ]] as CFDictionary : nil
+        var props: CFDictionary?
+        if gif {
+            var delay = [kCGImagePropertyGIFDelayTime: max(0.02, next - frame.time)]
+            if let highRateFPS {
+                // GIF stores centiseconds. Round cumulative time so 30 and 60 fps do not drift.
+                let desiredTicks = Int((100 * (next - frames[0].time)).rounded())
+                let ticks = max(highRateFPS == 60 ? 1 : 2, desiredTicks - writtenTicks)
+                writtenTicks += ticks
+                delay[kCGImagePropertyGIFUnclampedDelayTime] = Double(ticks) / 100
+                delay[kCGImagePropertyGIFDelayTime] = Double(ticks) / 100
+            }
+            props = [kCGImagePropertyGIFDictionary: delay] as CFDictionary
+        }
         CGImageDestinationAddImage(output, frame.image, props)
     }
     guard CGImageDestinationFinalize(output) else { throw CaptureError.encoding }
@@ -270,11 +283,12 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             actions.spacing = 10
             let options = GIFRecordingSettings()
             let fps = NSPopUpButton()
-            fps.addItems(withTitles: GIFRecordingSettings.frameRates.map { "\($0) fps" })
+            fps.addItems(withTitles: GIFRecordingSettings.frameRates.map(GIFRecordingSettings.label))
             fps.selectItem(at: GIFRecordingSettings.frameRates.firstIndex(of: options.fps)!)
             fps.target = self
             fps.action = #selector(setGIFFrameRate(_:))
             fps.setAccessibilityLabel("GIF 帧率")
+            fps.toolTip = "高帧率的最长录制时间随区域大小变化。部分应用会放慢 60 fps GIF。"
             let resolution = NSPopUpButton()
             resolution.addItems(withTitles: GIFRecordingSettings.resolutions.map { "\($0) px" })
             resolution.selectItem(at: GIFRecordingSettings.resolutions.firstIndex(of: options.longestEdge)!)
@@ -751,26 +765,34 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 state = "正在截图"
                 refresh()
             }
-            var frames: [Frame] = []
-            let start = ProcessInfo.processInfo.systemUptime
-            repeat {
-                let time = ProcessInfo.processInfo.systemUptime - start
-                let frame = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-                if pausedAt == nil || frames.isEmpty {
-                    frames.append(Frame(image: frame, time: time))
-                }
-                if gif && pausedAt == nil {
-                    let remaining = options.frameInterval - (ProcessInfo.processInfo.systemUptime - start - time)
-                    if remaining > 0 { try await Task.sleep(for: .seconds(remaining)) }
-                }
-            } while gif && pausedAt == nil && ProcessInfo.processInfo.systemUptime - start < 15
-            let end = (pausedAt ?? ProcessInfo.processInfo.systemUptime) - start
+            let highRate = gif && options.fps >= 30
+            let frames: [Frame]
+            let end: TimeInterval
+            if highRate {
+                (frames, end) = try await captureHighRate(filter: filter, config: config, fps: options.fps)
+            } else {
+                var captured: [Frame] = []
+                let start = ProcessInfo.processInfo.systemUptime
+                repeat {
+                    let time = ProcessInfo.processInfo.systemUptime - start
+                    let frame = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+                    if pausedAt == nil || captured.isEmpty {
+                        captured.append(Frame(image: frame, time: time))
+                    }
+                    if gif && pausedAt == nil {
+                        let remaining = options.frameInterval - (ProcessInfo.processInfo.systemUptime - start - time)
+                        if remaining > 0 { try await Task.sleep(for: .seconds(remaining)) }
+                    }
+                } while gif && pausedAt == nil && ProcessInfo.processInfo.systemUptime - start < 15
+                frames = captured
+                end = (pausedAt ?? ProcessInfo.processInfo.systemUptime) - start
+            }
             recording = false
             if gif { pausedAt = ProcessInfo.processInfo.systemUptime }
             state = gif ? "录制结束 · 正在生成 GIF" : "正在复制到剪贴板"
             refresh()
             let data = try await Task.detached(priority: .userInitiated) { [frames] in
-                try encode(frames, end: end, gif: gif)
+                try encode(frames, end: end, gif: gif, highRateFPS: highRate ? options.fps : nil)
             }.value
             if gif {
                 // Retain the bytes for manual recovery if the library cannot be written.
@@ -813,6 +835,30 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 showAlert("无法完成捕获", error.localizedDescription)
             }
         }
+    }
+
+    private func captureHighRate(filter: SCContentFilter, config: SCStreamConfiguration,
+                                 fps: Int) async throws -> ([Frame], TimeInterval) {
+        let budget = HighRateCaptureBudget(width: config.width, height: config.height, fps: fps)
+        config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
+        config.pixelFormat = kCVPixelFormatType_32BGRA
+        config.queueDepth = 6
+        config.colorSpaceName = CGColorSpace.sRGB
+        let receiver = HighRateCapture(frameLimit: budget.frameLimit)
+        let stream = SCStream(filter: filter, configuration: config, delegate: receiver)
+        try stream.addStreamOutput(receiver, type: .screen, sampleHandlerQueue: receiver.queue)
+        try await stream.startCapture()
+        let start = ProcessInfo.processInfo.systemUptime
+        state = "正在录制 GIF · \(fps) fps · 最长 \(String(format: "%.1f", budget.duration)) 秒"
+        refresh()
+        while !Task.isCancelled && pausedAt == nil && !receiver.didFinish &&
+            ProcessInfo.processInfo.systemUptime - start < budget.duration {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        let stopTime = pausedAt ?? ProcessInfo.processInfo.systemUptime
+        try? await stream.stopCapture()
+        try? stream.removeStreamOutput(receiver, type: .screen)
+        return try receiver.finish(at: stopTime)
     }
 
     private func showCapturePermissionAlert() {

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")"
-app="${1:-$PWD/build/snap-gif.app}"
+app="${1:-$PWD/build/local.noindex/snap-gif.app}"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 sdk="$(xcrun --sdk macosx --show-sdk-path)"
 arch="${SNAP_GIF_ARCH:-$(uname -m)}"

@@ -12,7 +12,7 @@ trap 'rm -rf "$stage"' EXIT
 
 for arch in arm64 x86_64; do
     name="snap-gif-macOS-$arch"
-    payload="$stage/$arch"
+    payload="$stage/$arch.noindex"
     mkdir "$payload"
     /usr/bin/ditto -x -k "$release_dir/$name.zip" "$payload"
     /usr/bin/codesign --verify --strict "$payload/snap-gif.app"

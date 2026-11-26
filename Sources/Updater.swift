@@ -78,7 +78,7 @@ struct ReleaseUpdater {
         guard manager.isWritableFile(atPath: parent.path), app.pathExtension == "app" else {
             throw UpdateError.cannotInstall
         }
-        let temp = parent.appendingPathComponent(".snap-gif-update-\(UUID().uuidString)", isDirectory: true)
+        let temp = parent.appendingPathComponent(".snap-gif-update-\(UUID().uuidString).noindex", isDirectory: true)
         try manager.createDirectory(at: temp, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { try? manager.removeItem(at: temp) }
 

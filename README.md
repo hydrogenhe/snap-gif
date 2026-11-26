@@ -16,7 +16,7 @@ GIF 默认存放于 `~/Library/Application Support/snap-gif/GIFs`。主窗口点
 
 ```sh
 ./build.sh
-open build/snap-gif.app
+open build/local.noindex/snap-gif.app
 ```
 
 ## 安装与更新

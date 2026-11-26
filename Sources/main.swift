@@ -889,10 +889,11 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let alert = NSAlert()
         alert.messageText = "macOS 拒绝了屏幕采集"
         alert.informativeText = """
-        如果 snap-gif 的开关已经打开，请先完全退出 App，再重新打开试一次。
+        如果更新后开关仍显示开启，但无法录屏，可清除 snap-gif 的录屏授权，再让 macOS 重新询问。
 
-        如果系统仍要求重新添加，请复制 App 位置并打开设置。点加号后按 ⌘⇧G，粘贴文件夹路径，回车后选中 snap-gif。
+        如果系统要求重新添加，点加号后按 ⌘⇧G，粘贴复制的文件夹路径，回车后选中 snap-gif。
         """
+        alert.addButton(withTitle: "清除旧授权并重新申请")
         alert.addButton(withTitle: "打开录屏设置")
         alert.addButton(withTitle: "复制位置并打开设置")
         let cancel = alert.addButton(withTitle: "取消")
@@ -900,8 +901,10 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.activate()
         switch alert.runModal() {
         case .alertFirstButtonReturn:
-            requestScreenRecordingPermission()
+            resetScreenRecordingPermission()
         case .alertSecondButtonReturn:
+            requestScreenRecordingPermission()
+        case .alertThirdButtonReturn:
             let folder = Bundle.main.bundleURL.deletingLastPathComponent().path
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
@@ -912,6 +915,32 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         default:
             break
+        }
+    }
+
+    private func resetScreenRecordingPermission() {
+        guard let identifier = Bundle.main.bundleIdentifier, !identifier.isEmpty else { return }
+        Task {
+            let reset = await Task.detached {
+                let command = Process()
+                command.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+                command.arguments = ["reset", "ScreenCapture", identifier]
+                command.standardOutput = FileHandle.nullDevice
+                command.standardError = FileHandle.nullDevice
+                do {
+                    try command.run()
+                    command.waitUntilExit()
+                    return command.terminationStatus == 0
+                } catch {
+                    return false
+                }
+            }.value
+            if reset {
+                requestScreenRecordingPermission()
+            } else {
+                showAlert("无法清除旧录屏授权",
+                          "请在系统设置的「录屏与系统录音」中选中旧的 snap-gif，点减号移除后再重新申请。")
+            }
         }
     }
 

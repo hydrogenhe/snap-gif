@@ -259,8 +259,8 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func presentControls(activate: Bool) {
         if controls == nil {
-            let windowWidth: CGFloat = 588
-            let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: windowWidth, height: 272),
+            let windowWidth: CGFloat = 624
+            let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: windowWidth, height: 304),
                                   styleMask: [.titled, .closable, .miniaturizable],
                                   backing: .buffered, defer: false)
             window.contentMaxSize = NSSize(width: windowWidth, height: window.contentMaxSize.height)
@@ -277,8 +277,6 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             icon.imageScaling = .scaleProportionallyUpOrDown
             icon.widthAnchor.constraint(equalToConstant: 36).isActive = true
             icon.heightAnchor.constraint(equalToConstant: 36).isActive = true
-            let summary = NSTextField(labelWithString: "框选录制区域后，点「开始」。")
-            summary.textColor = .secondaryLabelColor
             let screenshot = symbolButton("截图", symbol: "camera", target: self, action: #selector(captureScreenshot))
             let gif = symbolButton("录制区域 GIF", symbol: "record.circle", target: self, action: #selector(captureGIF))
             gif.bezelColor = .systemIndigo
@@ -288,7 +286,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let permission = NSButton(title: "申请权限", target: self,
                                       action: #selector(manageScreenRecordingPermission))
             let actions = NSStackView(views: [gif, screenshot])
-            actions.spacing = 10
+            actions.spacing = 12
             let options = GIFRecordingSettings()
             let fps = NSPopUpButton()
             fps.addItems(withTitles: GIFRecordingSettings.frameRates.map(GIFRecordingSettings.label))
@@ -304,9 +302,14 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             resolution.action = #selector(setGIFResolution(_:))
             resolution.setAccessibilityLabel("GIF 清晰度")
             resolution.toolTip = "GIF 最长边的像素上限"
-            let quality = NSStackView(views: [NSTextField(labelWithString: "帧率"), fps,
-                                            NSTextField(labelWithString: "清晰度"), resolution])
-            quality.spacing = 8
+            let frameRate = NSStackView(views: [NSTextField(labelWithString: "帧率"), fps])
+            let clarity = NSStackView(views: [NSTextField(labelWithString: "清晰度"), resolution])
+            for group in [frameRate, clarity] {
+                group.alignment = .centerY
+                group.spacing = 8
+            }
+            let quality = NSStackView(views: [frameRate, clarity, NSView(), permission])
+            quality.spacing = 20
             quality.alignment = .centerY
             let statusText = NSTextField(labelWithString: state)
             statusText.textColor = .secondaryLabelColor
@@ -314,7 +317,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let updateButton = symbolButton("检查更新…", symbol: "arrow.down.circle",
                                             target: self, action: #selector(checkUpdates))
             let header = NSStackView(views: [icon, title, NSView(), preferences, updateButton])
-            header.spacing = 10
+            header.spacing = 12
             header.alignment = .centerY
 
             let captureTitle = NSTextField(labelWithString: "屏幕捕获")
@@ -329,14 +332,12 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let captureHeader = NSStackView(views: [captureTitle, NSView(), statusText, progressIndicator])
             captureHeader.alignment = .centerY
             captureHeader.spacing = 8
-            quality.addArrangedSubview(NSView())
-            quality.addArrangedSubview(permission)
             permission.setContentHuggingPriority(.required, for: .horizontal)
             let separator = NSBox()
-            let captureBody = NSStackView(views: [captureHeader, actions, summary, separator, quality])
+            let captureBody = NSStackView(views: [captureHeader, actions, separator, quality])
             captureBody.orientation = .vertical
             captureBody.alignment = .leading
-            captureBody.spacing = 8
+            captureBody.spacing = 16
             separator.boxType = .separator
             separator.heightAnchor.constraint(equalToConstant: 1).isActive = true
             NSLayoutConstraint.activate([
@@ -344,7 +345,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 quality.widthAnchor.constraint(equalTo: captureBody.widthAnchor),
                 separator.widthAnchor.constraint(equalTo: captureBody.widthAnchor)
             ])
-            let captureCard = InsetSurface(captureBody, padding: 14)
+            let captureCard = InsetSurface(captureBody, padding: 20)
 
             let disclosure = NSButton(title: "", target: self, action: #selector(toggleLibrary))
             disclosure.setButtonType(.onOff)
@@ -361,20 +362,21 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             storage.toolTip = gifStore.directory.path
             let libraryHeader = NSStackView(views: [disclosure, libraryLabel, NSView(), storage, folder])
             libraryHeader.alignment = .centerY
-            libraryHeader.spacing = 7
+            libraryHeader.spacing = 10
             let library = GIFLibraryView(store: gifStore)
             library.isHidden = true
             let stack = NSStackView(views: [header, captureCard, libraryHeader, library])
             stack.orientation = .vertical
             stack.alignment = .leading
-            stack.spacing = 12
+            stack.spacing = 16
+            stack.setCustomSpacing(24, after: captureCard)
             stack.translatesAutoresizingMaskIntoConstraints = false
             guard let content = window.contentView else { return }
             content.addSubview(stack)
             NSLayoutConstraint.activate([
-                stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
-                stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18),
-                stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18),
+                stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 22),
+                stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
+                stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
                 header.widthAnchor.constraint(equalTo: stack.widthAnchor),
                 captureCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
                 libraryHeader.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -464,7 +466,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         libraryDisclosure?.state = expanded ? .on : .off
         libraryDisclosure?.setAccessibilityLabel(expanded ? "收起 GIF 图库" : "展开 GIF 图库")
         libraryView?.isHidden = !expanded
-        let delta: CGFloat = expanded ? 258 : -258
+        let delta: CGFloat = expanded ? 287 : -287
         var frame = controls.frame
         frame.origin.y -= delta
         frame.size.height += delta

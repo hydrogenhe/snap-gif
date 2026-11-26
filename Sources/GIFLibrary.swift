@@ -136,20 +136,24 @@ final class GIFLibraryView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         self.store = store
         super.init(frame: .zero)
         let column = NSTableColumn(identifier: .init("gif"))
-        column.title = "录制文件"
         column.resizingMask = .autoresizingMask
         table.addTableColumn(column)
+        table.headerView = nil
+        table.setAccessibilityLabel("最近的 GIF 文件")
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
-        table.usesAlternatingRowBackgroundColors = true
-        table.rowHeight = 30
+        table.style = .plain
+        table.rowHeight = 26
         table.dataSource = self
         table.delegate = self
         let scroll = NSScrollView()
         scroll.documentView = table
         scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
-        scroll.widthAnchor.constraint(equalToConstant: 248).isActive = true
+        scroll.borderType = .noBorder
+        let listSurface = InsetSurface(scroll, padding: 5)
+        listSurface.widthAnchor.constraint(equalToConstant: 184).isActive = true
         preview.imageScaling = .scaleProportionallyUpOrDown
+        preview.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        preview.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         preview.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         preview.setAccessibilityLabel("GIF 预览")
         let previewContent = NSView()
@@ -165,14 +169,15 @@ final class GIFLibraryView: NSView, NSTableViewDataSource, NSTableViewDelegate {
             emptyPreview.centerXAnchor.constraint(equalTo: previewContent.centerXAnchor),
             emptyPreview.centerYAnchor.constraint(equalTo: previewContent.centerYAnchor)
         ])
-        let previewSurface = InsetSurface(previewContent, padding: 12)
-        let browser = NSStackView(views: [scroll, previewSurface])
-        browser.spacing = 16
+        let previewSurface = InsetSurface(previewContent, padding: 9, fill: .windowBackgroundColor)
+        let browser = NSStackView(views: [listSurface, previewSurface])
+        browser.spacing = 10
         browser.alignment = .top
-        browser.heightAnchor.constraint(equalToConstant: 200).isActive = true
+        browser.heightAnchor.constraint(equalToConstant: 184).isActive = true
         NSLayoutConstraint.activate([
-            scroll.heightAnchor.constraint(equalTo: browser.heightAnchor),
+            listSurface.heightAnchor.constraint(equalTo: browser.heightAnchor),
             previewSurface.heightAnchor.constraint(equalTo: browser.heightAnchor),
+            previewSurface.trailingAnchor.constraint(equalTo: browser.trailingAnchor),
             previewSurface.widthAnchor.constraint(greaterThanOrEqualToConstant: 180)
         ])
 
@@ -188,6 +193,8 @@ final class GIFLibraryView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         let actions = NSStackView(views: [copyButton, exportButton, deleteButton, NSView(), playback])
         actions.spacing = 8
         caption.textColor = .secondaryLabelColor
+        caption.lineBreakMode = .byTruncatingTail
+        caption.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         details.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
         let metadata = NSStackView(views: [details, NSView(), caption])
         metadata.alignment = .firstBaseline

@@ -26,6 +26,51 @@ enum UpdateError: LocalizedError {
     }
 }
 
+enum UpdateInstallProgress: Sendable {
+    case downloading(received: Int64, expected: Int64)
+    case verifying
+    case installing
+}
+
+private final class UpdateDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let archive: URL
+    private let progress: @Sendable (UpdateInstallProgress) -> Void
+    private let completion: CheckedContinuation<URLResponse, Error>
+    // URLSession calls the delegate on its serial delegate queue.
+    private var result: Result<URLResponse, Error>?
+
+    init(archive: URL, progress: @escaping @Sendable (UpdateInstallProgress) -> Void,
+         completion: CheckedContinuation<URLResponse, Error>) {
+        self.archive = archive
+        self.progress = progress
+        self.completion = completion
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
+                    totalBytesExpectedToWrite: Int64) {
+        progress(.downloading(received: totalBytesWritten, expected: totalBytesExpectedToWrite))
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didFinishDownloadingTo location: URL) {
+        result = Result {
+            guard let response = downloadTask.response else { throw UpdateError.unavailable }
+            try FileManager.default.moveItem(at: location, to: archive)
+            return response
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        defer { session.finishTasksAndInvalidate() }
+        if let error {
+            completion.resume(throwing: error)
+        } else {
+            completion.resume(with: result ?? .failure(UpdateError.unavailable))
+        }
+    }
+}
+
 struct ReleaseUpdater {
     static let repository = "hydrogenhe/snap-gif"
     static let assetName: String = {
@@ -68,7 +113,8 @@ struct ReleaseUpdater {
         return release
     }
 
-    func install(_ release: GitHubRelease) async throws {
+    func install(_ release: GitHubRelease,
+                 progress: @escaping @Sendable (UpdateInstallProgress) -> Void = { _ in }) async throws {
         guard let asset = release.assets.first(where: { $0.name == Self.assetName }),
               let expected = asset.digest, expected.hasPrefix("sha256:") else {
             throw UpdateError.invalidArchive
@@ -86,11 +132,14 @@ struct ReleaseUpdater {
             throw UpdateError.invalidRelease
         }
         let url = URL(string: "https://github.com/\(Self.repository)/releases/download/\(release.tag_name)/\(Self.assetName)")!
-        let (download, response) = try await session.download(from: url)
-        defer { try? manager.removeItem(at: download) }
-        try requireSuccess(response)
         let archive = temp.appendingPathComponent("update.zip")
-        try manager.moveItem(at: download, to: archive)
+        let response = try await withCheckedThrowingContinuation { continuation in
+            let delegate = UpdateDownloadDelegate(archive: archive, progress: progress, completion: continuation)
+            let downloadSession = URLSession(configuration: session.configuration, delegate: delegate, delegateQueue: nil)
+            downloadSession.downloadTask(with: url).resume()
+        }
+        try requireSuccess(response)
+        progress(.verifying)
         let digest = SHA256.hash(data: try Data(contentsOf: archive, options: .mappedIfSafe))
         let actual = "sha256:" + digest.map { String(format: "%02x", $0) }.joined()
         guard actual == expected else { throw UpdateError.invalidArchive }
@@ -103,6 +152,7 @@ struct ReleaseUpdater {
         }
         try run(URL(fileURLWithPath: "/usr/bin/codesign"),
                     ["--verify", "--strict", "--deep", "-R", "=identifier \"\(identifier)\"", staged.path])
+        progress(.installing)
         _ = try manager.replaceItemAt(app, withItemAt: staged, backupItemName: nil,
                                       options: [.usingNewMetadataOnly])
     }

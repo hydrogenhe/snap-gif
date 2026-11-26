@@ -18,7 +18,7 @@ struct GIFRecordingSettings {
     }
 
     static func label(for fps: Int) -> String {
-        fps == 60 ? "60 fps（播放视应用而定）" : "\(fps) fps"
+        "\(fps) fps"
     }
 
     var frameInterval: TimeInterval { 1 / Double(fps) }

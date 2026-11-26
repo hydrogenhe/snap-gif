@@ -166,6 +166,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let declinedUpdateKey = "declinedUpdateTag"
     private var checkingUpdate = false
     private var updateInstalling = false
+    private var updateProgressIndicator: NSProgressIndicator?
     private var availableUpdate: (ReleaseUpdater, GitHubRelease)?
     private let signature: OSType = 0x53474946
 
@@ -258,9 +259,11 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func presentControls(activate: Bool) {
         if controls == nil {
-            let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 708, height: 292),
+            let windowWidth: CGFloat = 588
+            let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: windowWidth, height: 272),
                                   styleMask: [.titled, .closable, .miniaturizable],
                                   backing: .buffered, defer: false)
+            window.contentMaxSize = NSSize(width: windowWidth, height: window.contentMaxSize.height)
             window.title = "snap-gif"
             window.isReleasedWhenClosed = false
             window.isRestorable = false
@@ -268,20 +271,20 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.titleVisibility = .hidden
 
             let title = NSTextField(labelWithString: "snap-gif")
-            title.font = .systemFont(ofSize: 24, weight: .semibold)
+            title.font = .systemFont(ofSize: 21, weight: .semibold)
             let icon = NSImageView(image: NSApp.applicationIconImage)
             icon.setAccessibilityElement(false)
             icon.imageScaling = .scaleProportionallyUpOrDown
-            icon.widthAnchor.constraint(equalToConstant: 48).isActive = true
-            icon.heightAnchor.constraint(equalToConstant: 48).isActive = true
-            let summary = NSTextField(wrappingLabelWithString: "先框选区域，再点「开始」。停止后可只复制，或保存并复制。")
+            icon.widthAnchor.constraint(equalToConstant: 36).isActive = true
+            icon.heightAnchor.constraint(equalToConstant: 36).isActive = true
+            let summary = NSTextField(labelWithString: "框选录制区域后，点「开始」。")
             summary.textColor = .secondaryLabelColor
             let screenshot = symbolButton("截图", symbol: "camera", target: self, action: #selector(captureScreenshot))
             let gif = symbolButton("录制区域 GIF", symbol: "record.circle", target: self, action: #selector(captureGIF))
             gif.bezelColor = .systemIndigo
             gif.controlSize = .large
             screenshot.controlSize = .large
-            let preferences = symbolButton("快捷键设置…", symbol: "keyboard", target: self, action: #selector(showSettings))
+            let preferences = symbolButton("快捷键…", symbol: "keyboard", target: self, action: #selector(showSettings))
             let permission = NSButton(title: "申请权限", target: self,
                                       action: #selector(manageScreenRecordingPermission))
             let actions = NSStackView(views: [gif, screenshot])
@@ -316,16 +319,24 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
             let captureTitle = NSTextField(labelWithString: "屏幕捕获")
             captureTitle.font = .systemFont(ofSize: 17, weight: .semibold)
-            let captureHeader = NSStackView(views: [captureTitle, NSView(), statusText])
-            captureHeader.alignment = .firstBaseline
+            let progressIndicator = NSProgressIndicator()
+            progressIndicator.style = .bar
+            progressIndicator.controlSize = .small
+            progressIndicator.maxValue = 1
+            progressIndicator.isHidden = true
+            progressIndicator.setAccessibilityLabel("更新进度")
+            progressIndicator.widthAnchor.constraint(equalToConstant: 120).isActive = true
+            let captureHeader = NSStackView(views: [captureTitle, NSView(), statusText, progressIndicator])
+            captureHeader.alignment = .centerY
+            captureHeader.spacing = 8
             quality.addArrangedSubview(NSView())
             quality.addArrangedSubview(permission)
             permission.setContentHuggingPriority(.required, for: .horizontal)
             let separator = NSBox()
-            let captureBody = NSStackView(views: [captureHeader, summary, actions, separator, quality])
+            let captureBody = NSStackView(views: [captureHeader, actions, summary, separator, quality])
             captureBody.orientation = .vertical
             captureBody.alignment = .leading
-            captureBody.spacing = 10
+            captureBody.spacing = 8
             separator.boxType = .separator
             separator.heightAnchor.constraint(equalToConstant: 1).isActive = true
             NSLayoutConstraint.activate([
@@ -333,7 +344,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 quality.widthAnchor.constraint(equalTo: captureBody.widthAnchor),
                 separator.widthAnchor.constraint(equalTo: captureBody.widthAnchor)
             ])
-            let captureCard = InsetSurface(captureBody)
+            let captureCard = InsetSurface(captureBody, padding: 14)
 
             let disclosure = NSButton(title: "", target: self, action: #selector(toggleLibrary))
             disclosure.setButtonType(.onOff)
@@ -341,9 +352,11 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             disclosure.setAccessibilityLabel("展开 GIF 图库")
             let libraryLabel = NSTextField(labelWithString: "最近的 GIF")
             libraryLabel.font = .systemFont(ofSize: 17, weight: .semibold)
-            let folder = symbolButton("打开存储文件夹", symbol: "folder", target: self, action: #selector(openGIFFolder))
+            let folder = symbolButton("打开文件夹", symbol: "folder", target: self, action: #selector(openGIFFolder))
+            folder.setAccessibilityLabel("打开 GIF 存储文件夹")
             folder.setContentHuggingPriority(.required, for: .horizontal)
-            let storage = NSButton(title: "更改存储位置…", target: self, action: #selector(changeGIFFolder))
+            let storage = NSButton(title: "存储位置…", target: self, action: #selector(changeGIFFolder))
+            storage.setAccessibilityLabel("更改 GIF 存储位置")
             storage.setContentHuggingPriority(.required, for: .horizontal)
             storage.toolTip = gifStore.directory.path
             let libraryHeader = NSStackView(views: [disclosure, libraryLabel, NSView(), storage, folder])
@@ -354,14 +367,14 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let stack = NSStackView(views: [header, captureCard, libraryHeader, library])
             stack.orientation = .vertical
             stack.alignment = .leading
-            stack.spacing = 15
+            stack.spacing = 12
             stack.translatesAutoresizingMaskIntoConstraints = false
             guard let content = window.contentView else { return }
             content.addSubview(stack)
             NSLayoutConstraint.activate([
-                stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
-                stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
-                stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
+                stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
+                stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18),
+                stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18),
                 header.widthAnchor.constraint(equalTo: stack.widthAnchor),
                 captureCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
                 libraryHeader.widthAnchor.constraint(equalTo: stack.widthAnchor),
@@ -373,6 +386,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             controlGIF = gif
             controlPermission = permission
             controlUpdate = updateButton
+            updateProgressIndicator = progressIndicator
             libraryDisclosure = disclosure
             libraryView = library
             storageButton = storage
@@ -450,7 +464,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         libraryDisclosure?.state = expanded ? .on : .off
         libraryDisclosure?.setAccessibilityLabel(expanded ? "收起 GIF 图库" : "展开 GIF 图库")
         libraryView?.isHidden = !expanded
-        let delta: CGFloat = expanded ? 322 : -322
+        let delta: CGFloat = expanded ? 258 : -258
         var frame = controls.frame
         frame.origin.y -= delta
         frame.size.height += delta
@@ -598,20 +612,69 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func installUpdate(_ updater: ReleaseUpdater, release: GitHubRelease) {
         updateInstalling = true
-        state = "正在下载并安装 \(release.version)…"
+        updateProgressIndicator?.isHidden = false
+        showUpdateProgress(.downloading(received: 0, expected: -1), version: release.version)
         refresh()
         Task {
+            let (progress, continuation) = AsyncStream.makeStream(
+                of: UpdateInstallProgress.self, bufferingPolicy: .bufferingNewest(1)
+            )
+            let progressDisplay = Task {
+                for await step in progress {
+                    showUpdateProgress(step, version: release.version)
+                }
+            }
             do {
-                try await Task.detached { try await updater.install(release) }.value
+                try await Task.detached {
+                    defer { continuation.finish() }
+                    try await updater.install(release) { continuation.yield($0) }
+                }.value
+                await progressDisplay.value
                 try updater.relaunchAfterExit()
                 NSApp.terminate(nil)
             } catch {
+                await progressDisplay.value
+                updateProgressIndicator?.stopAnimation(nil)
+                updateProgressIndicator?.isHidden = true
                 updateInstalling = false
                 busy = false
                 state = "更新未完成"
                 refresh()
                 showAlert("无法完成更新", error.localizedDescription)
             }
+        }
+    }
+
+    private func showUpdateProgress(_ progress: UpdateInstallProgress, version: String) {
+        let fraction: Double?
+        switch progress {
+        case .downloading(let received, let expected):
+            if expected > 0 {
+                let downloaded = min(max(Double(received) / Double(expected), 0), 1)
+                fraction = downloaded
+                state = "正在下载 \(version) · \(Int(downloaded * 100))%"
+            } else {
+                fraction = nil
+                state = "正在下载 \(version)…"
+            }
+        case .verifying:
+            fraction = nil
+            state = "正在校验更新…"
+        case .installing:
+            fraction = nil
+            state = "正在安装并准备重启…"
+        }
+        controlStatus?.stringValue = state
+        guard let indicator = updateProgressIndicator else { return }
+        if let fraction {
+            if indicator.isIndeterminate {
+                indicator.stopAnimation(nil)
+                indicator.isIndeterminate = false
+            }
+            indicator.doubleValue = fraction
+        } else {
+            indicator.isIndeterminate = true
+            indicator.startAnimation(nil)
         }
     }
 

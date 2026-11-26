@@ -21,6 +21,7 @@ final class RecordingOverlay: NSObject {
     private let onCancel: () -> Void
     private var onCopy: (() -> Void)?
     private var onSave: (() -> Void)?
+    private var didCopyClip = false
     var isComplete: Bool { onCopy != nil }
 
     init(region: CGRect, screen: NSScreen, action: @escaping () -> Void, cancel: @escaping () -> Void) {
@@ -93,7 +94,7 @@ final class RecordingOverlay: NSObject {
 
     func update(recording: Bool, stopping: Bool) {
         guard !isComplete else { return }
-        label.stringValue = stopping ? "正在生成 GIF" : (recording ? "正在录制" : "准备录制")
+        label.stringValue = stopping ? "正在生成 GIF" : (recording ? "正在录制" : (didCopyClip ? "可继续录下一段" : "准备录制"))
         actionButton.title = recording ? "停止" : "开始"
         actionButton.isEnabled = !stopping
         cancelButton.title = recording ? "停止并丢弃" : "取消"
@@ -111,6 +112,14 @@ final class RecordingOverlay: NSObject {
         cancelButton.isHidden = false
         saveButton.isHidden = false
         outline.contentView?.layer?.borderColor = NSColor.systemBlue.cgColor
+    }
+
+    func prepareNextClip() {
+        onCopy = nil
+        onSave = nil
+        didCopyClip = true
+        saveButton.isHidden = true
+        update(recording: false, stopping: false)
     }
 
     func close() {

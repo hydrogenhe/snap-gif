@@ -137,6 +137,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var controlScreenshot: NSButton?
     private var controlGIF: NSButton?
     private var controlPermission: NSButton?
+    private var resettingScreenRecordingPermission = false
     private var controlUpdate: NSButton?
     private var libraryDisclosure: NSButton?
     private var libraryView: GIFLibraryView?
@@ -281,8 +282,8 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             gif.controlSize = .large
             screenshot.controlSize = .large
             let preferences = symbolButton("快捷键设置…", symbol: "keyboard", target: self, action: #selector(showSettings))
-            let permission = NSButton(title: "申请录屏权限…", target: self,
-                                      action: #selector(requestScreenRecordingPermission))
+            let permission = NSButton(title: "申请权限", target: self,
+                                      action: #selector(manageScreenRecordingPermission))
             let actions = NSStackView(views: [gif, screenshot])
             actions.spacing = 10
             let options = GIFRecordingSettings()
@@ -461,11 +462,20 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func refreshPermissionButton() {
         guard let controlPermission else { return }
-        controlPermission.title = CGPreflightScreenCaptureAccess() ? "录屏权限设置…" : "申请录屏权限…"
+        controlPermission.title = CGPreflightScreenCaptureAccess() ? "录屏权限设置…" : "申请权限"
+        controlPermission.isEnabled = !resettingScreenRecordingPermission
     }
 
-    @objc private func requestScreenRecordingPermission() {
-        if !CGPreflightScreenCaptureAccess() {
+    @objc private func manageScreenRecordingPermission() {
+        if CGPreflightScreenCaptureAccess() {
+            requestScreenRecordingPermission()
+        } else {
+            resetScreenRecordingPermission()
+        }
+    }
+
+    private func requestScreenRecordingPermission(force: Bool = false) {
+        if force || !CGPreflightScreenCaptureAccess() {
             _ = CGRequestScreenCaptureAccess()
         }
         let pane = if #available(macOS 26, *) {
@@ -888,39 +898,26 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func showCapturePermissionAlert() {
         let alert = NSAlert()
         alert.messageText = "macOS 拒绝了屏幕采集"
-        alert.informativeText = """
-        如果更新后开关仍显示开启，但无法录屏，可清除 snap-gif 的录屏授权，再让 macOS 重新询问。
-
-        如果系统要求重新添加，点加号后按 ⌘⇧G，粘贴复制的文件夹路径，回车后选中 snap-gif。
-        """
-        alert.addButton(withTitle: "清除旧授权并重新申请")
-        alert.addButton(withTitle: "打开录屏设置")
-        alert.addButton(withTitle: "复制位置并打开设置")
+        alert.informativeText = "申请时会清除 snap-gif 的旧录屏授权。请在 macOS 提示中允许录屏。"
+        alert.addButton(withTitle: "申请录屏权限")
         let cancel = alert.addButton(withTitle: "取消")
         cancel.keyEquivalent = "\u{1b}"
         NSApp.activate()
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
+        if alert.runModal() == .alertFirstButtonReturn {
             resetScreenRecordingPermission()
-        case .alertSecondButtonReturn:
-            requestScreenRecordingPermission()
-        case .alertThirdButtonReturn:
-            let folder = Bundle.main.bundleURL.deletingLastPathComponent().path
-            let pasteboard = NSPasteboard.general
-            pasteboard.clearContents()
-            if pasteboard.setString(folder, forType: .string) {
-                requestScreenRecordingPermission()
-            } else {
-                showAlert("无法复制 App 位置", folder)
-            }
-        default:
-            break
         }
     }
 
     private func resetScreenRecordingPermission() {
-        guard let identifier = Bundle.main.bundleIdentifier, !identifier.isEmpty else { return }
+        guard !resettingScreenRecordingPermission,
+              let identifier = Bundle.main.bundleIdentifier, !identifier.isEmpty else { return }
+        resettingScreenRecordingPermission = true
+        refreshPermissionButton()
         Task {
+            defer {
+                resettingScreenRecordingPermission = false
+                refreshPermissionButton()
+            }
             let reset = await Task.detached {
                 let command = Process()
                 command.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
@@ -935,12 +932,11 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     return false
                 }
             }.value
-            if reset {
-                requestScreenRecordingPermission()
-            } else {
+            if !reset {
                 showAlert("无法清除旧录屏授权",
-                          "请在系统设置的「录屏与系统录音」中选中旧的 snap-gif，点减号移除后再重新申请。")
+                          "将继续申请权限。如果系统仍显示失效的旧条目，请在「录屏与系统录音」中点减号移除后再申请。")
             }
+            requestScreenRecordingPermission(force: reset)
         }
     }
 

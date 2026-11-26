@@ -12,6 +12,8 @@ macOS 截图和 GIF 录制工具。打开 App 会显示操作窗口，也可以�
 
 GIF 默认存放于 `~/Library/Application Support/snap-gif/GIFs`。主窗口点「更改存储位置…」可选择其他文件夹，已有文件仍留在原位置。
 
+若 macOS 在更新后要求重新添加录屏权限，在捕获失败提示里点「复制位置并打开设置」。在系统设置点加号，按 ⌘⇧G 并粘贴，然后选择 snap-gif。
+
 需要 macOS 14 或更新版本。安装 Xcode Command Line Tools 后，可运行：
 
 ```sh

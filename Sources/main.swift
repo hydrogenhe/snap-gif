@@ -888,12 +888,30 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func showCapturePermissionAlert() {
         let alert = NSAlert()
         alert.messageText = "macOS 拒绝了屏幕采集"
-        alert.informativeText = "请在「录屏与系统录音」中允许 snap-gif。若开关已打开，请先完全退出再重新打开 App。"
+        alert.informativeText = """
+        如果 snap-gif 的开关已经打开，请先完全退出 App，再重新打开试一次。
+
+        如果系统仍要求重新添加，请复制 App 位置并打开设置。点加号后按 ⌘⇧G，粘贴文件夹路径，回车后选中 snap-gif。
+        """
         alert.addButton(withTitle: "打开录屏设置")
-        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: "复制位置并打开设置")
+        let cancel = alert.addButton(withTitle: "取消")
+        cancel.keyEquivalent = "\u{1b}"
         NSApp.activate()
-        if alert.runModal() == .alertFirstButtonReturn {
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
             requestScreenRecordingPermission()
+        case .alertSecondButtonReturn:
+            let folder = Bundle.main.bundleURL.deletingLastPathComponent().path
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            if pasteboard.setString(folder, forType: .string) {
+                requestScreenRecordingPermission()
+            } else {
+                showAlert("无法复制 App 位置", folder)
+            }
+        default:
+            break
         }
     }
 

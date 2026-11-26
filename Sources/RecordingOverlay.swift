@@ -1,5 +1,14 @@
 import AppKit
 
+private final class RecordingToolbarPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
+private final class RecordingToolbarButton: NSButton {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 @MainActor
 final class RecordingOverlay: NSObject {
     private let outline: NSWindow
@@ -39,10 +48,11 @@ final class RecordingOverlay: NSObject {
         let below = rect.minY - size.height - 10
         let above = rect.maxY + 10
         let y = below >= visible.minY ? below : min(above, visible.maxY - size.height)
-        panel = NSPanel(contentRect: CGRect(x: x, y: y, width: size.width, height: size.height),
+        panel = RecordingToolbarPanel(contentRect: CGRect(x: x, y: y, width: size.width, height: size.height),
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.level = .floating
         panel.isFloatingPanel = true
+        panel.becomesKeyOnlyIfNeeded = true
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.sharingType = .none
@@ -50,9 +60,9 @@ final class RecordingOverlay: NSObject {
         onAction = action
         onCancel = cancel
 
-        actionButton = NSButton(title: "开始", target: nil, action: nil)
-        cancelButton = NSButton(title: "取消", target: nil, action: nil)
-        saveButton = NSButton(title: "保存并复制", target: nil, action: nil)
+        actionButton = RecordingToolbarButton(title: "开始", target: nil, action: nil)
+        cancelButton = RecordingToolbarButton(title: "取消", target: nil, action: nil)
+        saveButton = RecordingToolbarButton(title: "保存并复制", target: nil, action: nil)
         super.init()
         actionButton.target = self
         actionButton.action = #selector(performAction)

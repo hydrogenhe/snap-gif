@@ -729,7 +729,6 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 showAlert("无法保存 GIF", error.localizedDescription)
                 return
             }
-            libraryView?.reload(select: file)
             pendingGIF = nil
             do {
                 try copyCapture(data, gifFile: file)
@@ -737,6 +736,10 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             } catch {
                 closeGIFOverlay(status: "GIF 已保存 · 可在图库复制")
                 showAlert("GIF 已保存，但复制失败", error.localizedDescription)
+            }
+            // Let AppKit remove the recording windows before decoding the new library preview.
+            DispatchQueue.main.async { [weak self] in
+                self?.libraryView?.reload(select: file)
             }
         } else {
             do {

@@ -21,7 +21,7 @@ open build/snap-gif.app
 
 ## 安装与更新
 
-从 [GitHub Releases](https://github.com/hydrogenhe/snap-gif/releases/latest) 下载适合你的 Mac 的 ZIP，解压后将 App 放到可写目录。需要 macOS 14 或更新版本，可选 Apple 芯片版（arm64）或 Intel 版（x86_64）。
+从 [GitHub Releases](https://github.com/hydrogenhe/snap-gif/releases/latest) 下载适合你的 Mac 的 DMG。打开它，把 **snap-gif** 拖到窗口里的 **Applications（应用程序）**，以后就能从 Mac 的「应用程序」列表搜索打开。需要 macOS 14 或更新版本，可选 Apple 芯片版（arm64）或 Intel 版（x86_64）。也可以下载 ZIP，解压后把 App 拖到「应用程序」。
 
 下载和 App 内更新都无需 GitHub 登录。在主窗口点「检查更新…」会立即查询 GitHub。App 也会在启动时和每运行 6 小时自动检查。有新版时会弹出提示，点「是，下载并安装」才会安装并重新打开 App。点「否，暂不更新」后，同一版本不再自动提醒，仍可手动检查。v0.3.3 及更新版本可直接通过 App 升级。
 

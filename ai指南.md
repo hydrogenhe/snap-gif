@@ -17,4 +17,5 @@
 - 更新：`Sources/Updater.swift` 用无登录、无 Cookie 的 URLSession 读取最新公开 Release 的 `snap-gif-update.json`，校验资产 SHA-256、App 签名、标识和版本后安装。启动和每运行 6 小时自动检查，主窗口按钮可立即查询。用户确认后才安装，拒绝版本不再自动提示。
 - 发布：正式版本用 `vX.Y.Z` 标签和匹配的 Info.plist 版本；用 `./build.sh` 构建并为 arm64 和 x86_64 分别打包并上传 Release，文件名为 `snap-gif-macOS-<架构>.zip`。用 `SNAP_GIF_ARCH=x86_64 ./build.sh <独立输出路径>` 构建 Intel 版。打包好两个 ZIP 后运行 `./release-manifest.sh <ZIP 输出目录>`，把生成的 `snap-gif-update.json` 和两个 ZIP 一起上传。
 - GitHub：`hydrogenhe/snap-gif`（公开），默认分支 `main`。
+- 给首次安装用户提供拖拽安装 DMG。用 `bash scripts/package-dmg.sh <ZIP 输出目录>` 从同一版本的 ZIP 生成两个架构的 DMG，保留 ZIP 和更新清单供应用内更新。挂载验证后上传到同一个 Release。项目内的测试和验收构建请放在 `build` 下带 `.noindex` 后缀的目录内，避免被系统应用搜索列为正式版副本。
 - CodeGraph：已用官方 CLI 执行 `CODEGRAPH_TELEMETRY=0 codegraph init --local-only`，索引 1 个 Swift 文件，索引目录不提交。源码变更后可运行 `codegraph sync`。
